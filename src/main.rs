@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod git;
+mod onboarding;
 mod tmux;
 
 use anyhow::Result;
@@ -92,6 +93,18 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Check for first-time setup (skip for config command)
+    let onboarding_path = if !matches!(cli.command, Some(Commands::Config { .. })) {
+        onboarding::check_and_run_onboarding()?
+    } else {
+        None
+    };
+
+    // If onboarding selected a path, use it
+    if let Some(path) = onboarding_path {
+        return commands::open(Some(path.to_string_lossy().to_string()));
+    }
 
     match cli.command {
         Some(Commands::Open { target }) => commands::open(target),
