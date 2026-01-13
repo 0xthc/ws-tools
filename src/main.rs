@@ -1,4 +1,5 @@
 mod commands;
+mod config;
 mod git;
 mod tmux;
 
@@ -78,6 +79,15 @@ enum Commands {
 
     /// Show status dashboard with worktrees and sessions
     Status,
+
+    /// Configure workspace settings
+    Config {
+        /// Setting to configure (e.g., ai_tool)
+        key: Option<String>,
+
+        /// Value to set
+        value: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -92,6 +102,7 @@ fn main() -> Result<()> {
         Some(Commands::Sync { create, delete }) => commands::sync(create, delete),
         Some(Commands::Doctor { install }) => commands::doctor(install),
         Some(Commands::Status) => commands::status(),
+        Some(Commands::Config { key, value }) => commands::config(key, value),
         None => {
             // Default to open current directory
             commands::open(None)

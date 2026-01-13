@@ -13,6 +13,7 @@ which = "6"
 libc = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
+dirs = "5"
 
 [profile.release]
 strip = true

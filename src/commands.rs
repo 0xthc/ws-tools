@@ -1,3 +1,4 @@
+use crate::config::{AiTool, Config};
 use crate::git;
 use crate::tmux;
 use anyhow::{Context, Result};
@@ -839,6 +840,91 @@ pub fn status() -> Result<()> {
     // Restore terminal
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    Ok(())
+}
+
+/// Configure workspace settings
+pub fn config(key: Option<String>, value: Option<String>) -> Result<()> {
+    let mut cfg = Config::load()?;
+
+    match (key.as_deref(), value.as_deref()) {
+        // Show all settings
+        (None, None) => {
+            println!("{}", "Workspace Configuration".bold());
+            println!();
+            println!("  {} = {}", "ai_tool".cyan(), cfg.ai_tool);
+
+            let installed = if cfg.is_ai_tool_installed() {
+                "installed".green()
+            } else {
+                "not installed".red()
+            };
+            println!("           ({})", installed);
+
+            println!();
+            println!("{}", "Available AI tools:".dimmed());
+            for tool in AiTool::all() {
+                let marker = if *tool == cfg.ai_tool { "●" } else { " " };
+                let installed = if which::which(tool.binary()).is_ok() {
+                    "✓".green()
+                } else {
+                    "✗".red()
+                };
+                println!(
+                    "  {} {} {} - {}",
+                    marker,
+                    installed,
+                    tool.command(),
+                    tool.name()
+                );
+            }
+
+            println!();
+            println!("Set with: {} <key> <value>", "ws config".cyan());
+            println!("Example:  {} ai_tool claude", "ws config".cyan());
+        }
+
+        // Show specific setting
+        (Some(k), None) => match k {
+            "ai_tool" => {
+                println!("{}", cfg.ai_tool);
+            }
+            _ => {
+                anyhow::bail!("Unknown setting: {}", k);
+            }
+        },
+
+        // Set a value
+        (Some(k), Some(v)) => match k {
+            "ai_tool" => {
+                let tool = AiTool::from_str(v).context(format!(
+                    "Unknown AI tool: {}. Valid options: droid, claude, codex, gemini, copilot",
+                    v
+                ))?;
+
+                cfg.ai_tool = tool;
+                cfg.save()?;
+
+                println!("{} Set ai_tool to {}", "::".green().bold(), tool.name());
+
+                if !cfg.is_ai_tool_installed() {
+                    println!(
+                        "{} Warning: {} is not installed",
+                        "::".yellow().bold(),
+                        tool.binary()
+                    );
+                }
+            }
+            _ => {
+                anyhow::bail!("Unknown setting: {}", k);
+            }
+        },
+
+        (None, Some(_)) => {
+            anyhow::bail!("Please specify a setting name");
+        }
+    }
 
     Ok(())
 }
