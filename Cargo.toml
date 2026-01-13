@@ -1,0 +1,19 @@
+[package]
+name = "ws"
+version = "0.1.0"
+edition = "2021"
+description = "Workspace CLI for git worktrees with tmux layouts"
+authors = ["Theophile"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+anyhow = "1"
+which = "6"
+libc = "0.2"
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+strip = true
+lto = true

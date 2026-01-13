@@ -1,0 +1,781 @@
+use crate::git;
+use crate::tmux;
+use anyhow::{Context, Result};
+use colored::*;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Layout},
+    style::{Color as RatColor, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell as RatCell, Row, Table as RatTable},
+    Terminal,
+};
+use std::io::{self, stdout, BufRead, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+/// Generate session name from directory
+fn get_session_name(dir: &PathBuf) -> Result<String> {
+    let repo_name = dir
+        .file_name()
+        .context("Invalid directory")?
+        .to_string_lossy();
+    let branch = git::get_branch(dir)?;
+    let branch_safe = git::sanitize_branch(&branch);
+    Ok(format!("{}-{}", repo_name, branch_safe))
+}
+
+/// Generate window title for Ghostty tab: "repo/worktree [branch]"
+fn get_window_title(dir: &PathBuf) -> Result<String> {
+    let worktree_name = dir
+        .file_name()
+        .context("Invalid directory")?
+        .to_string_lossy();
+
+    // Try to get the repo name from git root
+    let git_root = git::get_root(Some(dir)).ok();
+    let repo_name = git_root
+        .as_ref()
+        .and_then(|r| r.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| worktree_name.to_string());
+
+    let branch = git::get_branch(dir)?;
+
+    // Format: "repo/worktree [branch]" or just "repo [branch]" if same
+    if repo_name == worktree_name {
+        Ok(format!("{} [{}]", repo_name, branch))
+    } else {
+        Ok(format!("{}/{} [{}]", repo_name, worktree_name, branch))
+    }
+}
+
+/// Open workspace for a directory
+pub fn open(path: Option<PathBuf>) -> Result<()> {
+    let dir = match path {
+        Some(p) => p,
+        None => git::get_root(None).unwrap_or_else(|_| std::env::current_dir().unwrap()),
+    };
+
+    if !dir.exists() {
+        anyhow::bail!("Directory not found: {}", dir.display());
+    }
+
+    let session = get_session_name(&dir)?;
+
+    if tmux::session_exists(&session) {
+        println!("{} Attaching to existing session: {}", "::".blue().bold(), session);
+        tmux::attach(&session)?;
+        return Ok(());
+    }
+
+    let window_title = get_window_title(&dir)?;
+    println!("{} Creating workspace: {}", "::".blue().bold(), session);
+    tmux::create_session_with_title(&session, &dir, &window_title)?;
+    tmux::attach(&session)?;
+
+    Ok(())
+}
+
+/// Create new worktree and open workspace
+pub fn new(branch: &str, base: &str) -> Result<()> {
+    let git_root = git::get_root(None).context("Not in a git repository")?;
+
+    let branch_safe = git::sanitize_branch(branch);
+    let parent = git_root.parent().context("Cannot determine parent directory")?;
+    let wt_path = parent.join(&branch_safe);
+
+    if wt_path.exists() {
+        println!("{} Worktree already exists at {}", "::".yellow().bold(), wt_path.display());
+        println!("{} Opening existing worktree...", "::".blue().bold());
+        return open(Some(wt_path));
+    }
+
+    println!("{} Creating worktree '{}' from '{}'...", "::".blue().bold(), branch, base);
+
+    git::create_worktree(&git_root, branch, base, &wt_path)?;
+
+    println!("{} Worktree created at {}", "::".green().bold(), wt_path.display());
+
+    open(Some(wt_path))
+}
+
+/// List all worktrees with session status
+pub fn list() -> Result<()> {
+    let git_root = git::get_root(None).context("Not in a git repository")?;
+    let worktrees = git::list_worktrees(&git_root)?;
+    let active_sessions = tmux::get_active_sessions();
+
+    println!("{}", "Worktrees".bold());
+    println!();
+
+    for wt in worktrees {
+        let session_name = get_session_name(&wt.path)?;
+        let status = if active_sessions.contains(&session_name) {
+            "●".green().to_string()
+        } else {
+            " ".to_string()
+        };
+
+        let main_marker = if wt.path == git_root {
+            " (main)".yellow().to_string()
+        } else {
+            String::new()
+        };
+
+        println!("  {} {}{}", status, wt.branch, main_marker);
+        println!("    {}", wt.path.display().to_string().blue());
+        println!();
+    }
+
+    Ok(())
+}
+
+/// Interactive worktree selector with fzf
+pub fn select(direct_path: Option<PathBuf>) -> Result<()> {
+    // If direct path provided, just open it
+    if let Some(path) = direct_path {
+        return open(Some(path));
+    }
+
+    let git_root = git::get_root(None).context("Not in a git repository")?;
+    let worktrees = git::list_worktrees(&git_root)?;
+    let active_sessions = tmux::get_active_sessions();
+
+    // Check if fzf is available
+    if which::which("fzf").is_err() {
+        anyhow::bail!("fzf is required for interactive selection. Install it with: brew install fzf");
+    }
+
+    // Build options for fzf
+    let mut options: Vec<String> = worktrees
+        .iter()
+        .map(|wt| {
+            let session_name = get_session_name(&wt.path).unwrap_or_default();
+            let status = if active_sessions.contains(&session_name) {
+                "●"
+            } else {
+                " "
+            };
+            format!("{} {}|{}", status, wt.branch, wt.path.display())
+        })
+        .collect();
+
+    options.push("+ Create new worktree...|__CREATE__".to_string());
+
+    // Run fzf
+    let mut fzf = Command::new("fzf")
+        .args([
+            "--ansi",
+            "--no-sort",
+            "--header=Select worktree (● = active session)",
+            "--delimiter=|",
+            "--with-nth=1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to start fzf")?;
+
+    {
+        let stdin = fzf.stdin.as_mut().context("Failed to get fzf stdin")?;
+        for opt in &options {
+            writeln!(stdin, "{}", opt)?;
+        }
+    }
+
+    let output = fzf.wait_with_output()?;
+
+    if !output.status.success() {
+        // User cancelled
+        return Ok(());
+    }
+
+    let selected = String::from_utf8_lossy(&output.stdout);
+    let selected = selected.trim();
+
+    if selected.is_empty() {
+        return Ok(());
+    }
+
+    // Extract path from selection
+    let path = selected
+        .split('|')
+        .nth(1)
+        .context("Invalid selection")?;
+
+    if path == "__CREATE__" {
+        return interactive_create();
+    }
+
+    open(Some(PathBuf::from(path)))
+}
+
+fn interactive_create() -> Result<()> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    print!("Branch name: ");
+    stdout.flush()?;
+
+    let mut branch = String::new();
+    stdin.lock().read_line(&mut branch)?;
+    let branch = branch.trim();
+
+    if branch.is_empty() {
+        anyhow::bail!("No branch name provided");
+    }
+
+    print!("Base branch [develop]: ");
+    stdout.flush()?;
+
+    let mut base = String::new();
+    stdin.lock().read_line(&mut base)?;
+    let base = base.trim();
+    let base = if base.is_empty() { "develop" } else { base };
+
+    new(branch, base)
+}
+
+/// Delete worktree, tmux session, and local branch
+pub fn delete(target: &str, force: bool) -> Result<()> {
+    let git_root = git::get_root(None).context("Not in a git repository")?;
+
+    // Find the worktree
+    let worktree = git::find_worktree(&git_root, target)?
+        .context(format!("Worktree not found: {}", target))?;
+
+    // Check if it's the main worktree
+    if worktree.path == git_root {
+        anyhow::bail!("Cannot delete the main worktree");
+    }
+
+    // Check if it's a detached worktree (no branch to delete)
+    let is_detached = worktree.branch.starts_with("detached:");
+    let branch_name = worktree.branch.clone();
+
+    let session_name = get_session_name(&worktree.path)?;
+
+    // Kill tmux session if it exists
+    if tmux::session_exists(&session_name) {
+        println!("{} Killing session: {}", "::".blue().bold(), session_name);
+        tmux::kill_session(&session_name)?;
+    }
+
+    // Remove the worktree
+    println!("{} Removing worktree: {}", "::".blue().bold(), worktree.path.display());
+    git::remove_worktree(&git_root, &worktree.path, force)?;
+
+    // Delete the local branch (unless detached)
+    if !is_detached {
+        println!("{} Deleting branch: {}", "::".blue().bold(), branch_name);
+        git::delete_branch(&git_root, &branch_name, force)?;
+    }
+
+    println!("{} Deleted worktree, session, and branch for '{}'", "::".green().bold(), branch_name);
+
+    Ok(())
+}
+
+/// Sync tmux sessions with worktrees
+pub fn sync(create_missing: bool, delete_unused: bool) -> Result<()> {
+    let git_root = git::get_root(None).context("Not in a git repository")?;
+    let worktrees = git::list_worktrees(&git_root)?;
+    let active_sessions = tmux::get_active_sessions();
+
+    // Get repo name for session matching
+    let repo_name = git_root
+        .file_name()
+        .context("Invalid git root")?
+        .to_string_lossy();
+
+    // Build set of valid session names
+    let valid_sessions: std::collections::HashSet<String> = worktrees
+        .iter()
+        .filter_map(|wt| get_session_name(&wt.path).ok())
+        .collect();
+
+    // Find orphaned sessions (sessions without worktrees)
+    let orphaned: Vec<&String> = active_sessions
+        .iter()
+        .filter(|s| s.starts_with(&format!("{}-", repo_name)) && !valid_sessions.contains(*s))
+        .collect();
+
+    // Find worktrees without sessions (excluding main worktree)
+    let unused: Vec<_> = worktrees
+        .iter()
+        .filter(|wt| {
+            // Skip main worktree
+            if wt.path == git_root {
+                return false;
+            }
+            if let Ok(name) = get_session_name(&wt.path) {
+                !active_sessions.contains(&name)
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    if orphaned.is_empty() && unused.is_empty() {
+        println!("{} Everything is in sync!", "::".green().bold());
+        return Ok(());
+    }
+
+    let mut killed = 0;
+    let mut created = 0;
+    let mut deleted = 0;
+
+    // Report and clean up orphaned sessions
+    if !orphaned.is_empty() {
+        println!("{}", "Orphaned sessions (no worktree):".bold());
+        for session in &orphaned {
+            println!("  {} {}", "✗".red(), session);
+            tmux::kill_session(session)?;
+            println!("    {}", "killed".dimmed());
+            killed += 1;
+        }
+        println!();
+    }
+
+    // Report/handle worktrees without sessions
+    if !unused.is_empty() {
+        println!("{}", "Worktrees without sessions:".bold());
+        for wt in &unused {
+            let session_name = get_session_name(&wt.path)?;
+            let is_detached = wt.branch.starts_with("detached:");
+
+            if delete_unused {
+                println!("  {} {}", "✗".red(), wt.branch);
+
+                // Remove worktree
+                git::remove_worktree(&git_root, &wt.path, false)?;
+                println!("    {}", "worktree removed".dimmed());
+
+                // Delete branch if not detached
+                if !is_detached {
+                    git::delete_branch(&git_root, &wt.branch, false)?;
+                    println!("    {}", "branch deleted".dimmed());
+                }
+                deleted += 1;
+            } else if create_missing {
+                println!("  {} {} ({})", "○".yellow(), wt.branch, session_name.dimmed());
+                let window_title = get_window_title(&wt.path)?;
+                tmux::create_session_with_title(&session_name, &wt.path, &window_title)?;
+                println!("    {}", "created".green());
+                created += 1;
+            } else {
+                println!("  {} {} ({})", "○".yellow(), wt.branch, session_name.dimmed());
+            }
+        }
+
+        if !delete_unused && !create_missing {
+            println!();
+            println!("  {} to create sessions", "ws sync --create".cyan());
+            println!("  {} to delete worktrees", "ws sync --delete".cyan());
+        }
+        println!();
+    }
+
+    println!(
+        "{} Sync complete: {} sessions killed, {} sessions created, {} worktrees deleted",
+        "::".green().bold(),
+        killed,
+        created,
+        deleted
+    );
+
+    Ok(())
+}
+
+/// Dependency information
+struct Dependency {
+    name: &'static str,
+    brew_name: &'static str,
+    description: &'static str,
+    required: bool,
+}
+
+const DEPENDENCIES: &[Dependency] = &[
+    Dependency {
+        name: "tmux",
+        brew_name: "tmux",
+        description: "Terminal multiplexer for workspace layouts",
+        required: true,
+    },
+    Dependency {
+        name: "git",
+        brew_name: "git",
+        description: "Version control (for worktrees)",
+        required: true,
+    },
+    Dependency {
+        name: "fzf",
+        brew_name: "fzf",
+        description: "Fuzzy finder for interactive selection",
+        required: true,
+    },
+    Dependency {
+        name: "lazygit",
+        brew_name: "lazygit",
+        description: "Terminal UI for git",
+        required: false,
+    },
+    Dependency {
+        name: "droid",
+        brew_name: "", // Not available via brew, it's Claude Code
+        description: "Claude Code CLI (install from claude.ai)",
+        required: false,
+    },
+];
+
+/// Check and install dependencies
+pub fn doctor(install: bool) -> Result<()> {
+    println!("{}", "Workspace CLI Dependencies".bold());
+    println!();
+
+    let mut missing_required: Vec<&Dependency> = Vec::new();
+    let mut missing_optional: Vec<&Dependency> = Vec::new();
+    let mut all_ok = true;
+
+    for dep in DEPENDENCIES {
+        let found = which::which(dep.name).is_ok();
+        let status = if found {
+            "✓".green().to_string()
+        } else {
+            all_ok = false;
+            if dep.required {
+                missing_required.push(dep);
+                "✗".red().to_string()
+            } else {
+                missing_optional.push(dep);
+                "○".yellow().to_string()
+            }
+        };
+
+        let req = if dep.required { "" } else { " (optional)" };
+        println!("  {} {}{}", status, dep.name, req.dimmed());
+        println!("    {}", dep.description.dimmed());
+    }
+
+    println!();
+
+    if all_ok {
+        println!("{} All dependencies installed!", "::".green().bold());
+        return Ok(());
+    }
+
+    // Install missing dependencies
+    if install {
+        // Check for Homebrew
+        if which::which("brew").is_err() {
+            anyhow::bail!("Homebrew is required to install dependencies. Install from https://brew.sh");
+        }
+
+        let to_install: Vec<_> = missing_required
+            .iter()
+            .chain(missing_optional.iter())
+            .filter(|d| !d.brew_name.is_empty())
+            .collect();
+
+        if to_install.is_empty() {
+            println!("{} Nothing to install via Homebrew", "::".yellow().bold());
+        } else {
+            println!("{} Installing dependencies...", "::".blue().bold());
+            println!();
+
+            for dep in to_install {
+                println!("  Installing {}...", dep.name);
+                let result = Command::new("brew")
+                    .args(["install", dep.brew_name])
+                    .status();
+
+                match result {
+                    Ok(status) if status.success() => {
+                        println!("    {}", "installed".green());
+                    }
+                    _ => {
+                        println!("    {}", "failed".red());
+                    }
+                }
+            }
+
+            println!();
+        }
+
+        // Check for droid separately
+        if missing_optional.iter().any(|d| d.name == "droid") {
+            println!("{} Note: 'droid' (Claude Code) must be installed manually:", "::".yellow().bold());
+            println!("  Visit https://claude.ai/download");
+            println!();
+        }
+
+        println!("{} Run 'ws doctor' to verify installation", "::".blue().bold());
+    } else {
+        if !missing_required.is_empty() {
+            println!("{} Missing required dependencies!", "::".red().bold());
+            println!("  Run {} to install", "ws doctor --install".cyan());
+        } else {
+            println!("{} Some optional dependencies missing", "::".yellow().bold());
+            println!("  Run {} to install", "ws doctor --install".cyan());
+        }
+    }
+
+    Ok(())
+}
+
+/// Show status dashboard with worktrees and sessions using ratatui
+pub fn status() -> Result<()> {
+    let git_root = git::get_root(None).context("Not in a git repository")?;
+    let worktrees = git::list_worktrees(&git_root)?;
+    let active_sessions = tmux::get_active_sessions();
+
+    // Get repo name for session matching
+    let repo_name = git_root
+        .file_name()
+        .context("Invalid git root")?
+        .to_string_lossy()
+        .to_string();
+
+    // Build linked pairs and find orphans
+    let mut all_entries: Vec<(String, String, String, bool, bool)> = Vec::new(); // (session, branch, path, is_main, has_session)
+    let mut worktree_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for wt in &worktrees {
+        if let Ok(session_name) = get_session_name(&wt.path) {
+            let has_session = active_sessions.contains(&session_name);
+            let is_main = wt.path == git_root;
+
+            if has_session {
+                worktree_sessions.insert(session_name.clone());
+            }
+
+            all_entries.push((
+                session_name,
+                wt.branch.clone(),
+                wt.path.display().to_string(),
+                is_main,
+                has_session,
+            ));
+        }
+    }
+
+    // Find orphaned sessions (sessions without worktrees)
+    let orphaned_sessions: Vec<String> = active_sessions
+        .iter()
+        .filter(|s| s.starts_with(&format!("{}-", repo_name)) && !worktree_sessions.contains(*s))
+        .cloned()
+        .collect();
+
+    // Find orphaned worktrees (worktrees without sessions, excluding main)
+    let orphaned_worktrees: Vec<String> = worktrees
+        .iter()
+        .filter(|wt| {
+            if wt.path == git_root {
+                return false;
+            }
+            if let Ok(name) = get_session_name(&wt.path) {
+                !active_sessions.contains(&name)
+            } else {
+                false
+            }
+        })
+        .map(|wt| wt.branch.clone())
+        .collect();
+
+    let has_orphans = !orphaned_sessions.is_empty() || !orphaned_worktrees.is_empty();
+
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Draw the UI
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        // Main vertical layout
+        let chunks = if has_orphans {
+            Layout::vertical([
+                Constraint::Length(2), // Title
+                Constraint::Min(5),    // Main table
+                Constraint::Length(6), // Orphan tables
+                Constraint::Length(2), // Tips
+            ])
+            .split(area)
+        } else {
+            Layout::vertical([
+                Constraint::Length(2), // Title
+                Constraint::Min(5),    // Main table
+                Constraint::Length(2), // Success message
+            ])
+            .split(area)
+        };
+
+        // Title
+        let title = Line::from(vec![
+            Span::styled(
+                format!(" {} ", repo_name),
+                Style::default().fg(RatColor::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Workspace Status"),
+        ]);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(title),
+            chunks[0],
+        );
+
+        // Main table
+        let header = Row::new(vec![
+            RatCell::from("").style(Style::default()),
+            RatCell::from("Session").style(Style::default().fg(RatColor::Cyan)),
+            RatCell::from("Branch").style(Style::default().fg(RatColor::Cyan)),
+            RatCell::from("Path").style(Style::default().fg(RatColor::Cyan)),
+        ])
+        .height(1);
+
+        let rows: Vec<Row> = all_entries
+            .iter()
+            .map(|(session, branch, path, is_main, has_session)| {
+                let status = if *has_session { "●" } else { "○" };
+                let status_style = if *has_session {
+                    Style::default().fg(RatColor::Green)
+                } else {
+                    Style::default().fg(RatColor::Yellow)
+                };
+                let main_marker = if *is_main { " (main)" } else { "" };
+                let dim_style = Style::default().fg(RatColor::DarkGray);
+
+                Row::new(vec![
+                    RatCell::from(status).style(status_style),
+                    RatCell::from(session.as_str()).style(if *has_session {
+                        Style::default()
+                    } else {
+                        dim_style
+                    }),
+                    RatCell::from(format!("{}{}", branch, main_marker)),
+                    RatCell::from(path.as_str()).style(dim_style),
+                ])
+            })
+            .collect();
+
+        let table = RatTable::new(
+            rows,
+            [
+                Constraint::Length(2),
+                Constraint::Percentage(30),
+                Constraint::Percentage(25),
+                Constraint::Percentage(45),
+            ],
+        )
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Worktrees & Sessions ")
+                .border_style(Style::default().fg(RatColor::DarkGray)),
+        );
+        frame.render_widget(table, chunks[1]);
+
+        if has_orphans {
+            // Split bottom area for two orphan tables
+            let orphan_chunks = Layout::horizontal([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .split(chunks[2]);
+
+            // Orphaned sessions table
+            let session_rows: Vec<Row> = if orphaned_sessions.is_empty() {
+                vec![Row::new(vec![RatCell::from("None").style(
+                    Style::default().fg(RatColor::DarkGray),
+                )])]
+            } else {
+                orphaned_sessions
+                    .iter()
+                    .map(|s| Row::new(vec![RatCell::from(s.as_str())]))
+                    .collect()
+            };
+            let sessions_table = RatTable::new(session_rows, [Constraint::Percentage(100)])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(
+                            " Orphaned Sessions ",
+                            Style::default().fg(RatColor::Red),
+                        ))
+                        .border_style(Style::default().fg(RatColor::DarkGray)),
+                );
+            frame.render_widget(sessions_table, orphan_chunks[0]);
+
+            // Orphaned worktrees table
+            let worktree_rows: Vec<Row> = if orphaned_worktrees.is_empty() {
+                vec![Row::new(vec![RatCell::from("None").style(
+                    Style::default().fg(RatColor::DarkGray),
+                )])]
+            } else {
+                orphaned_worktrees
+                    .iter()
+                    .map(|b| Row::new(vec![RatCell::from(b.as_str())]))
+                    .collect()
+            };
+            let worktrees_table = RatTable::new(worktree_rows, [Constraint::Percentage(100)])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(
+                            " Orphaned Worktrees ",
+                            Style::default().fg(RatColor::Yellow),
+                        ))
+                        .border_style(Style::default().fg(RatColor::DarkGray)),
+                );
+            frame.render_widget(worktrees_table, orphan_chunks[1]);
+
+            // Tips
+            let tips = ratatui::widgets::Paragraph::new(Line::from(vec![
+                Span::styled(" Tip: ", Style::default().fg(RatColor::DarkGray)),
+                Span::styled("ws sync --create", Style::default().fg(RatColor::Cyan)),
+                Span::raw(" to create sessions  "),
+                Span::styled("ws sync --delete", Style::default().fg(RatColor::Cyan)),
+                Span::raw(" to delete worktrees  "),
+                Span::styled("q", Style::default().fg(RatColor::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw(" to quit"),
+            ]));
+            frame.render_widget(tips, chunks[3]);
+        } else {
+            // Success message
+            let success = ratatui::widgets::Paragraph::new(Line::from(vec![
+                Span::styled(" ✓ ", Style::default().fg(RatColor::Green)),
+                Span::raw("All worktrees and sessions are in sync  "),
+                Span::styled("q", Style::default().fg(RatColor::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw(" to quit"),
+            ]));
+            frame.render_widget(success, chunks[2]);
+        }
+    })?;
+
+    // Wait for 'q' to quit
+    loop {
+        if crossterm::event::poll(std::time::Duration::from_millis(100))? {
+            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                if key.code == crossterm::event::KeyCode::Char('q')
+                    || key.code == crossterm::event::KeyCode::Esc
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Restore terminal
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    Ok(())
+}
