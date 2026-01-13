@@ -38,8 +38,8 @@ impl AiTool {
     /// Get a human-readable name
     pub fn name(&self) -> &'static str {
         match self {
-            AiTool::Droid => "Claude Code (droid)",
-            AiTool::Claude => "Claude CLI",
+            AiTool::Droid => "Factory AI (droid)",
+            AiTool::Claude => "Claude Code",
             AiTool::Codex => "OpenAI Codex CLI",
             AiTool::Gemini => "Google Gemini CLI",
             AiTool::Copilot => "GitHub Copilot CLI",
@@ -49,8 +49,8 @@ impl AiTool {
     /// Parse from string
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "droid" | "claude-code" => Some(AiTool::Droid),
-            "claude" => Some(AiTool::Claude),
+            "droid" | "factory" => Some(AiTool::Droid),
+            "claude" | "claude-code" => Some(AiTool::Claude),
             "codex" => Some(AiTool::Codex),
             "gemini" => Some(AiTool::Gemini),
             "copilot" | "gh-copilot" => Some(AiTool::Copilot),
@@ -91,12 +91,10 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Get the config file path
+    /// Get the config file path (~/.ws/config.toml)
     pub fn path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .context("Could not determine config directory")?
-            .join("ws");
-        Ok(config_dir.join("config.toml"))
+        let home = dirs::home_dir().context("Could not determine home directory")?;
+        Ok(home.join(".ws").join("config.toml"))
     }
 
     /// Load config from file, or return defaults
