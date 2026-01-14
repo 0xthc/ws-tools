@@ -104,17 +104,73 @@ explorer_tool = "texplore"
 
 ## Release Process
 
-1. **Update version** in both `ws/Cargo.toml` and `texplore/Cargo.toml`
-2. **Commit**: `git commit -am "Bump version to X.Y.Z"`
-3. **Tag**: `git tag vX.Y.Z`
-4. **Push**: `git push && git push --tags`
+### Step 1: Update versions and commit
 
-The GitHub Actions workflow (`.github/workflows/release.yml`) will:
+```bash
+# Edit version in both Cargo.toml files
+# ws/Cargo.toml: version = "X.Y.Z"
+# texplore/Cargo.toml: version = "X.Y.Z"
+
+git add -A
+git commit -m "Bump version to X.Y.Z"
+```
+
+### Step 2: Tag and push
+
+```bash
+git tag vX.Y.Z
+git push && git push --tags
+```
+
+### Step 3: Wait for GitHub Actions
+
+The release workflow (`.github/workflows/release.yml`) will:
 - Build for Linux x86_64, macOS x86_64, macOS aarch64
 - Create tar.gz archives with SHA256 checksums
 - Create GitHub release with changelog
 
-The Homebrew workflow (`.github/workflows/update-homebrew.yml`) updates the tap automatically.
+Monitor progress:
+```bash
+gh run list --repo 0xthc/ws-tools --limit 2
+```
+
+### Step 4: Update Homebrew tap
+
+Once the release is complete, download checksums and update the tap:
+
+```bash
+# Download SHA256 checksums
+gh release download vX.Y.Z --repo 0xthc/ws-tools --pattern "*.sha256" --dir /tmp/checksums
+cat /tmp/checksums/*.sha256
+
+# Update formulas in ~/homebrew-tap/Formula/
+# - ws.rb: update version and 3 sha256 values (aarch64, x86_64, linux)
+# - texplore.rb: update version and 3 sha256 values
+
+cd ~/homebrew-tap
+git add -A
+git commit -m "Update ws and texplore to vX.Y.Z"
+git push
+```
+
+### Checksums mapping
+
+| File | Formula field |
+|------|---------------|
+| `ws-macos-aarch64.tar.gz.sha256` | `ws.rb` → `on_arm` |
+| `ws-macos-x86_64.tar.gz.sha256` | `ws.rb` → `on_intel` |
+| `ws-linux-x86_64.tar.gz.sha256` | `ws.rb` → `on_linux` |
+| `texplore-macos-aarch64.tar.gz.sha256` | `texplore.rb` → `on_arm` |
+| `texplore-macos-x86_64.tar.gz.sha256` | `texplore.rb` → `on_intel` |
+| `texplore-linux-x86_64.tar.gz.sha256` | `texplore.rb` → `on_linux` |
+
+### Verify release
+
+```bash
+brew update
+brew upgrade ws texplore
+ws --version  # Should show X.Y.Z
+```
 
 ## Local Development
 
