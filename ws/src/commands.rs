@@ -5,9 +5,13 @@ use crate::tmux;
 use anyhow::{Context, Result};
 use colored::*;
 use crossterm::{
+    cursor::{MoveTo, Show},
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, Clear as TermClear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -74,8 +78,9 @@ pub fn open(target: Option<String>) -> Result<()> {
                     Some(wt) => wt.path,
                     None => {
                         // Ask user if they want to create the worktree
+                        let default_branch = git::get_default_branch(Some(&git_root));
                         println!("{} Worktree '{}' not found.", "::".yellow().bold(), t);
-                        print!("Create new worktree from develop? [Y/n]: ");
+                        print!("Create new worktree from {}? [Y/n]: ", default_branch);
                         io::stdout().flush()?;
 
                         let mut input = String::new();
@@ -84,7 +89,7 @@ pub fn open(target: Option<String>) -> Result<()> {
 
                         if input.is_empty() || input == "y" || input == "yes" {
                             // Create the worktree and return its path
-                            return new(&t, "develop");
+                            return new(&t, &default_branch);
                         } else {
                             anyhow::bail!("Aborted");
                         }
@@ -318,6 +323,9 @@ fn interactive_create() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
+    let git_root = git::get_root(None).ok();
+    let default_branch = git::get_default_branch(git_root.as_deref());
+
     print!("Branch name: ");
     stdout.flush()?;
 
@@ -329,13 +337,17 @@ fn interactive_create() -> Result<()> {
         anyhow::bail!("No branch name provided");
     }
 
-    print!("Base branch [develop]: ");
+    print!("Base branch [{}]: ", default_branch);
     stdout.flush()?;
 
     let mut base = String::new();
     stdin.lock().read_line(&mut base)?;
     let base = base.trim();
-    let base = if base.is_empty() { "develop" } else { base };
+    let base = if base.is_empty() {
+        &default_branch
+    } else {
+        base
+    };
 
     new(branch, base)
 }
@@ -1255,9 +1267,17 @@ fn run_ai_selector(current: AiTool) -> Result<Option<AiTool>> {
         }
     }
 
-    // Restore terminal
+    // Restore terminal with full cleanup
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        TermClear(ClearType::All),
+        MoveTo(0, 0),
+        Show
+    )?;
+    // Flush to ensure all escape sequences are written before popup closes
+    terminal.backend_mut().flush()?;
 
     Ok(selected)
 }

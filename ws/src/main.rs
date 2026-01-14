@@ -32,9 +32,9 @@ enum Commands {
         /// Branch name for the new worktree
         branch: String,
 
-        /// Base branch to create from (default: develop)
-        #[arg(short, long, default_value = "develop")]
-        from: String,
+        /// Base branch to create from (auto-detects: main, master, or develop)
+        #[arg(short, long)]
+        from: Option<String>,
     },
 
     /// List all worktrees with session status
@@ -121,7 +121,10 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Open { target }) => commands::open(target),
-        Some(Commands::New { branch, from }) => commands::new(&branch, &from),
+        Some(Commands::New { branch, from }) => {
+            let base = from.unwrap_or_else(|| git::get_default_branch(None));
+            commands::new(&branch, &base)
+        }
         Some(Commands::List) => commands::list(),
         Some(Commands::Select { path }) => commands::select(path),
         Some(Commands::Delete { target, force }) => commands::delete(&target, force),

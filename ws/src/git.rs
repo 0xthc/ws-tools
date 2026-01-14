@@ -2,6 +2,61 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Get the default branch for a repository (main, master, develop, etc.)
+pub fn get_default_branch(git_root: Option<&Path>) -> String {
+    // Try to get from remote HEAD (most reliable for repos with remotes)
+    let mut cmd = Command::new("git");
+    if let Some(path) = git_root {
+        cmd.current_dir(path);
+    }
+    cmd.args(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"]);
+
+    if let Ok(output) = cmd.output() {
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // Remove "origin/" prefix if present
+            if let Some(name) = branch.strip_prefix("origin/") {
+                return name.to_string();
+            }
+            if !branch.is_empty() {
+                return branch;
+            }
+        }
+    }
+
+    // Fallback: check which common branches exist locally or remotely
+    let candidates = ["main", "master", "develop"];
+    for candidate in candidates {
+        let mut cmd = Command::new("git");
+        if let Some(path) = git_root {
+            cmd.current_dir(path);
+        }
+        cmd.args(["rev-parse", "--verify", &format!("origin/{}", candidate)]);
+
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                return candidate.to_string();
+            }
+        }
+
+        // Also check local branch
+        let mut cmd = Command::new("git");
+        if let Some(path) = git_root {
+            cmd.current_dir(path);
+        }
+        cmd.args(["rev-parse", "--verify", candidate]);
+
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Ultimate fallback
+    "main".to_string()
+}
+
 /// Information about a git worktree
 #[derive(Debug, Clone)]
 pub struct Worktree {
