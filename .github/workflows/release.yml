@@ -41,24 +41,30 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar -czvf ../../../ws-${{ matrix.artifact_suffix }}.tar.gz ws
           cd ../../..
+          shasum -a 256 ws-${{ matrix.artifact_suffix }}.tar.gz > ws-${{ matrix.artifact_suffix }}.tar.gz.sha256
 
       - name: Package texplore
         run: |
           cd target/${{ matrix.target }}/release
           tar -czvf ../../../texplore-${{ matrix.artifact_suffix }}.tar.gz texplore
           cd ../../..
+          shasum -a 256 texplore-${{ matrix.artifact_suffix }}.tar.gz > texplore-${{ matrix.artifact_suffix }}.tar.gz.sha256
 
       - name: Upload ws artifact
         uses: actions/upload-artifact@v4
         with:
           name: ws-${{ matrix.artifact_suffix }}
-          path: ws-${{ matrix.artifact_suffix }}.tar.gz
+          path: |
+            ws-${{ matrix.artifact_suffix }}.tar.gz
+            ws-${{ matrix.artifact_suffix }}.tar.gz.sha256
 
       - name: Upload texplore artifact
         uses: actions/upload-artifact@v4
         with:
           name: texplore-${{ matrix.artifact_suffix }}
-          path: texplore-${{ matrix.artifact_suffix }}.tar.gz
+          path: |
+            texplore-${{ matrix.artifact_suffix }}.tar.gz
+            texplore-${{ matrix.artifact_suffix }}.tar.gz.sha256
 
   release:
     name: Create Release
@@ -102,6 +108,7 @@ jobs:
           body_path: changelog.txt
           files: |
             artifacts/**/*.tar.gz
+            artifacts/**/*.sha256
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
