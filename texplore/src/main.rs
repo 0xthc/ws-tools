@@ -31,7 +31,10 @@ fn main() -> io::Result<()> {
                 return Ok(());
             }
             "--help" | "-h" => {
-                println!("texplore {} - Terminal file explorer with git integration", VERSION);
+                println!(
+                    "texplore {} - Terminal file explorer with git integration",
+                    VERSION
+                );
                 println!();
                 println!("Usage: texplore [PATH]");
                 println!();

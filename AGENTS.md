@@ -39,7 +39,7 @@ ws-tools/
 | Feature | Files | Description |
 |---------|-------|-------------|
 | **Commands** | `main.rs`, `commands.rs` | open, new, list, select, delete, sync, doctor, status, config, init, ai |
-| **AI Tool Config** | `config.rs` | AiTool enum - droid, claude, codex, gemini, copilot, vibe |
+| **AI Tool Config** | `config.rs` | AiTool enum - droid, claude, codex, gemini, copilot, vibe, opencode |
 | **Git Tool Config** | `config.rs` | GitTool enum - lazygit, gitui, tig, custom |
 | **Explorer Config** | `config.rs` | ExplorerTool enum - texplore, yazi, ranger, lf, nnn, custom |
 | **Tmux Layouts** | `tmux.rs` | Large (5 panes) and small (3 panes) display layouts |

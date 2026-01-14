@@ -5,12 +5,13 @@ use std::path::PathBuf;
 /// Available AI CLI tools
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AiTool {
-    Droid,   // Claude Code (default)
-    Claude,  // Claude CLI
-    Codex,   // OpenAI Codex CLI
-    Gemini,  // Google Gemini CLI
-    Copilot, // GitHub Copilot CLI
-    Vibe,    // Mistral Vibe CLI
+    Droid,    // Claude Code (default)
+    Claude,   // Claude CLI
+    Codex,    // OpenAI Codex CLI
+    Gemini,   // Google Gemini CLI
+    Copilot,  // GitHub Copilot CLI
+    Vibe,     // Mistral Vibe CLI
+    OpenCode, // OpenCode CLI
 }
 
 impl AiTool {
@@ -23,6 +24,7 @@ impl AiTool {
             AiTool::Gemini => "gemini",
             AiTool::Copilot => "gh copilot",
             AiTool::Vibe => "vibe",
+            AiTool::OpenCode => "opencode",
         }
     }
 
@@ -35,6 +37,7 @@ impl AiTool {
             AiTool::Gemini => "gemini",
             AiTool::Copilot => "gh",
             AiTool::Vibe => "vibe",
+            AiTool::OpenCode => "opencode",
         }
     }
 
@@ -47,6 +50,7 @@ impl AiTool {
             AiTool::Gemini => "Google Gemini CLI",
             AiTool::Copilot => "GitHub Copilot CLI",
             AiTool::Vibe => "Mistral Vibe",
+            AiTool::OpenCode => "OpenCode",
         }
     }
 
@@ -59,6 +63,7 @@ impl AiTool {
             "gemini" => Some(AiTool::Gemini),
             "copilot" | "gh-copilot" => Some(AiTool::Copilot),
             "vibe" | "mistral-vibe" => Some(AiTool::Vibe),
+            "opencode" => Some(AiTool::OpenCode),
             _ => None,
         }
     }
@@ -72,6 +77,7 @@ impl AiTool {
             AiTool::Gemini,
             AiTool::Copilot,
             AiTool::Vibe,
+            AiTool::OpenCode,
         ]
     }
 }
@@ -291,7 +297,7 @@ impl Config {
             r#"# Workspace CLI Configuration
 
 # AI tool for the main coding panel
-# Options: droid (default), claude, codex, gemini, copilot, vibe
+# Options: droid (default), claude, codex, gemini, copilot, vibe, opencode
 ai_tool = "{}"
 
 # Git TUI for the top-left panel
