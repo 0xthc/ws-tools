@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["ws", "texplore"]
+
+[workspace.package]
+edition = "2021"
+authors = ["Theophile"]
+
+[profile.release]
+strip = true
+lto = true

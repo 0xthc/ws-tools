@@ -1,0 +1,6 @@
+# ws CLI integration for lazygit
+customCommands:
+  - key: 'o'
+    context: 'worktrees'
+    command: 'ws select --path {{.SelectedWorktree.Path}}'
+    description: 'Open worktree in new tmux session'

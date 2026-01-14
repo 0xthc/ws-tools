@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_suffix: linux-x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_suffix: macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_suffix: macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package ws
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../ws-${{ matrix.artifact_suffix }}.tar.gz ws
+          cd ../../..
+
+      - name: Package texplore
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../texplore-${{ matrix.artifact_suffix }}.tar.gz texplore
+          cd ../../..
+
+      - name: Upload ws artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ws-${{ matrix.artifact_suffix }}
+          path: ws-${{ matrix.artifact_suffix }}.tar.gz
+
+      - name: Upload texplore artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: texplore-${{ matrix.artifact_suffix }}
+          path: texplore-${{ matrix.artifact_suffix }}.tar.gz
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            # First release - get all commits
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            # Get commits since last tag
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Write to file for multi-line support
+          echo "$CHANGELOG" > changelog.txt
+          echo "Generated changelog:"
+          cat changelog.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          body_path: changelog.txt
+          files: |
+            artifacts/**/*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
