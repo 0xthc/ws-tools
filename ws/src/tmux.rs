@@ -73,9 +73,11 @@ pub fn create_session_with_title(session: &str, dir: &Path, window_title: &str) 
     let dir_str = dir.to_str().context("Invalid path")?;
     let ghostty_env = get_ghostty_env();
 
-    // Load config to get AI tool
+    // Load config to get panel tools
     let config = Config::load().unwrap_or_default();
     let ai_cmd = config.ai_tool.command();
+    let git_cmd = config.git_tool.command();
+    let explorer_cmd = config.explorer_tool.command();
 
     // Create new session with window name
     let mut args = vec![
@@ -97,15 +99,36 @@ pub fn create_session_with_title(session: &str, dir: &Path, window_title: &str) 
 
     // Create layout based on display size
     if is_large_display() {
-        create_large_layout(session, dir_str, &ghostty_env, ai_cmd)?;
+        create_large_layout(
+            session,
+            dir_str,
+            &ghostty_env,
+            ai_cmd,
+            git_cmd,
+            explorer_cmd,
+        )?;
     } else {
-        create_small_layout(session, dir_str, &ghostty_env, ai_cmd)?;
+        create_small_layout(
+            session,
+            dir_str,
+            &ghostty_env,
+            ai_cmd,
+            git_cmd,
+            explorer_cmd,
+        )?;
     }
 
     Ok(())
 }
 
-fn create_large_layout(session: &str, dir: &str, env: &[String], ai_cmd: &str) -> Result<()> {
+fn create_large_layout(
+    session: &str,
+    dir: &str,
+    env: &[String],
+    ai_cmd: &str,
+    git_cmd: &str,
+    explorer_cmd: &str,
+) -> Result<()> {
     // Large display: golden ratio 3 columns (23% | 54% | 23%)
     run_tmux_split(session, "0.0", dir, env, &["-h", "-p", "77"])?;
     run_tmux_split(session, "0.1", dir, env, &["-h", "-p", "30"])?;
@@ -113,8 +136,8 @@ fn create_large_layout(session: &str, dir: &str, env: &[String], ai_cmd: &str) -
     run_tmux_split(session, "0.3", dir, env, &["-v"])?;
 
     // Send commands to panes
-    send_keys(session, "0.0", "lazygit")?;
-    send_keys(session, "0.1", "texplore")?;
+    send_keys(session, "0.0", git_cmd)?;
+    send_keys(session, "0.1", explorer_cmd)?;
     send_keys(session, "0.2", ai_cmd)?;
     send_keys(session, "0.3", "ls -la")?;
     send_keys(
@@ -127,14 +150,21 @@ fn create_large_layout(session: &str, dir: &str, env: &[String], ai_cmd: &str) -
     Ok(())
 }
 
-fn create_small_layout(session: &str, dir: &str, env: &[String], ai_cmd: &str) -> Result<()> {
+fn create_small_layout(
+    session: &str,
+    dir: &str,
+    env: &[String],
+    ai_cmd: &str,
+    git_cmd: &str,
+    explorer_cmd: &str,
+) -> Result<()> {
     // Small display: 2 columns golden ratio (38% | 62%)
     run_tmux_split(session, "0.0", dir, env, &["-h", "-p", "62"])?;
     run_tmux_split(session, "0.0", dir, env, &["-v"])?;
 
     // Send commands to panes
-    send_keys(session, "0.0", "lazygit")?;
-    send_keys(session, "0.1", "texplore")?;
+    send_keys(session, "0.0", git_cmd)?;
+    send_keys(session, "0.1", explorer_cmd)?;
     send_keys(session, "0.2", ai_cmd)?;
 
     select_pane(session, "0.2")?;

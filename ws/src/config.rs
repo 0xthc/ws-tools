@@ -76,16 +76,150 @@ impl std::fmt::Display for AiTool {
     }
 }
 
+/// Available git TUI tools
+#[derive(Debug, Clone, PartialEq)]
+pub enum GitTool {
+    Lazygit,
+    Gitui,
+    Tig,
+    Custom(String),
+}
+
+impl GitTool {
+    pub fn command(&self) -> &str {
+        match self {
+            GitTool::Lazygit => "lazygit",
+            GitTool::Gitui => "gitui",
+            GitTool::Tig => "tig",
+            GitTool::Custom(cmd) => cmd,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            GitTool::Lazygit => "lazygit",
+            GitTool::Gitui => "gitui",
+            GitTool::Tig => "tig",
+            GitTool::Custom(_) => "custom",
+        }
+    }
+
+    pub fn binary(&self) -> &str {
+        match self {
+            GitTool::Lazygit => "lazygit",
+            GitTool::Gitui => "gitui",
+            GitTool::Tig => "tig",
+            GitTool::Custom(cmd) => cmd.split_whitespace().next().unwrap_or(cmd),
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "lazygit" => GitTool::Lazygit,
+            "gitui" => GitTool::Gitui,
+            "tig" => GitTool::Tig,
+            _ => GitTool::Custom(s.to_string()),
+        }
+    }
+
+    pub fn all() -> &'static [GitTool] {
+        &[GitTool::Lazygit, GitTool::Gitui, GitTool::Tig]
+    }
+}
+
+impl std::fmt::Display for GitTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.command())
+    }
+}
+
+/// Available file explorer tools
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExplorerTool {
+    Texplore,
+    Yazi,
+    Ranger,
+    Lf,
+    Nnn,
+    Custom(String),
+}
+
+impl ExplorerTool {
+    pub fn command(&self) -> &str {
+        match self {
+            ExplorerTool::Texplore => "texplore",
+            ExplorerTool::Yazi => "yazi",
+            ExplorerTool::Ranger => "ranger",
+            ExplorerTool::Lf => "lf",
+            ExplorerTool::Nnn => "nnn",
+            ExplorerTool::Custom(cmd) => cmd,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            ExplorerTool::Texplore => "texplore",
+            ExplorerTool::Yazi => "yazi",
+            ExplorerTool::Ranger => "ranger",
+            ExplorerTool::Lf => "lf",
+            ExplorerTool::Nnn => "nnn",
+            ExplorerTool::Custom(_) => "custom",
+        }
+    }
+
+    pub fn binary(&self) -> &str {
+        match self {
+            ExplorerTool::Texplore => "texplore",
+            ExplorerTool::Yazi => "yazi",
+            ExplorerTool::Ranger => "ranger",
+            ExplorerTool::Lf => "lf",
+            ExplorerTool::Nnn => "nnn",
+            ExplorerTool::Custom(cmd) => cmd.split_whitespace().next().unwrap_or(cmd),
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "texplore" => ExplorerTool::Texplore,
+            "yazi" => ExplorerTool::Yazi,
+            "ranger" => ExplorerTool::Ranger,
+            "lf" => ExplorerTool::Lf,
+            "nnn" => ExplorerTool::Nnn,
+            _ => ExplorerTool::Custom(s.to_string()),
+        }
+    }
+
+    pub fn all() -> &'static [ExplorerTool] {
+        &[
+            ExplorerTool::Texplore,
+            ExplorerTool::Yazi,
+            ExplorerTool::Ranger,
+            ExplorerTool::Lf,
+            ExplorerTool::Nnn,
+        ]
+    }
+}
+
+impl std::fmt::Display for ExplorerTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.command())
+    }
+}
+
 /// Application configuration
 #[derive(Debug)]
 pub struct Config {
     pub ai_tool: AiTool,
+    pub git_tool: GitTool,
+    pub explorer_tool: ExplorerTool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             ai_tool: AiTool::Droid,
+            git_tool: GitTool::Lazygit,
+            explorer_tool: ExplorerTool::Texplore,
         }
     }
 }
@@ -118,10 +252,19 @@ impl Config {
                 let key = key.trim();
                 let value = value.trim().trim_matches('"');
 
-                if key == "ai_tool" {
-                    if let Some(tool) = AiTool::from_str(value) {
-                        config.ai_tool = tool;
+                match key {
+                    "ai_tool" => {
+                        if let Some(tool) = AiTool::from_str(value) {
+                            config.ai_tool = tool;
+                        }
                     }
+                    "git_tool" => {
+                        config.git_tool = GitTool::from_str(value);
+                    }
+                    "explorer_tool" => {
+                        config.explorer_tool = ExplorerTool::from_str(value);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -139,8 +282,21 @@ impl Config {
         }
 
         let content = format!(
-            "# Workspace CLI Configuration\n\n# AI tool to launch in the main panel\n# Options: droid (default), claude, codex, gemini, copilot\nai_tool = \"{}\"\n",
-            self.ai_tool
+            r#"# Workspace CLI Configuration
+
+# AI tool for the main coding panel
+# Options: droid (default), claude, codex, gemini, copilot
+ai_tool = "{}"
+
+# Git TUI for the top-left panel
+# Options: lazygit (default), gitui, tig, or any custom command
+git_tool = "{}"
+
+# File explorer for the bottom-left panel
+# Options: texplore (default), yazi, ranger, lf, nnn, or any custom command
+explorer_tool = "{}"
+"#,
+            self.ai_tool, self.git_tool, self.explorer_tool
         );
 
         fs::write(&path, content).context("Failed to write config file")?;
@@ -150,5 +306,15 @@ impl Config {
     /// Check if the configured AI tool is installed
     pub fn is_ai_tool_installed(&self) -> bool {
         which::which(self.ai_tool.binary()).is_ok()
+    }
+
+    /// Check if the configured git tool is installed
+    pub fn is_git_tool_installed(&self) -> bool {
+        which::which(self.git_tool.binary()).is_ok()
+    }
+
+    /// Check if the configured explorer tool is installed
+    pub fn is_explorer_tool_installed(&self) -> bool {
+        which::which(self.explorer_tool.binary()).is_ok()
     }
 }

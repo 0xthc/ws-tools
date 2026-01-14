@@ -107,10 +107,38 @@ pub fn open(target: Option<String>) -> Result<()> {
         return Ok(());
     }
 
+    // Warn about missing tools
+    warn_missing_tools()?;
+
     let window_title = get_window_title(&dir)?;
     println!("{} Creating workspace: {}", "::".blue().bold(), session);
     tmux::create_session_with_title(&session, &dir, &window_title)?;
     tmux::attach(&session)?;
+
+    Ok(())
+}
+
+/// Warn if configured panel tools are not installed
+fn warn_missing_tools() -> Result<()> {
+    let cfg = Config::load()?;
+    let mut warnings = Vec::new();
+
+    if !cfg.is_ai_tool_installed() {
+        warnings.push(format!("AI tool '{}' not found", cfg.ai_tool.command()));
+    }
+    if !cfg.is_git_tool_installed() {
+        warnings.push(format!("Git tool '{}' not found", cfg.git_tool.command()));
+    }
+    if !cfg.is_explorer_tool_installed() {
+        warnings.push(format!(
+            "Explorer '{}' not found",
+            cfg.explorer_tool.command()
+        ));
+    }
+
+    for warning in warnings {
+        println!("{} {}", "⚠".yellow().bold(), warning.yellow());
+    }
 
     Ok(())
 }
@@ -993,16 +1021,25 @@ pub fn init() -> Result<()> {
 
     // Run onboarding
     if let Some(result) = onboarding::run_onboarding()? {
+        // Save names before moving
+        let ai_name = result.ai_tool.name().to_string();
+        let git_name = result.git_tool.name().to_string();
+        let explorer_name = result.explorer_tool.name().to_string();
+
         let config = Config {
-            ai_tool: result.tool,
+            ai_tool: result.ai_tool,
+            git_tool: result.git_tool,
+            explorer_tool: result.explorer_tool,
         };
         config.save()?;
 
         println!();
         println!(
-            "{} Configuration saved! Using {} as your AI tool.",
+            "{} Configuration saved! AI: {}, Git: {}, Explorer: {}",
             "::".green().bold(),
-            result.tool.name()
+            ai_name,
+            git_name,
+            explorer_name
         );
         println!();
 

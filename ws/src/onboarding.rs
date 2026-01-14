@@ -1,4 +1,4 @@
-use crate::config::{AiTool, Config};
+use crate::config::{AiTool, Config, ExplorerTool, GitTool};
 use crate::git;
 use anyhow::Result;
 use crossterm::{
@@ -85,20 +85,34 @@ const ASCII_FRAMES: &[&str] = &[
 ];
 
 /// Current screen/mode
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
+#[allow(clippy::enum_variant_names)]
 enum Screen {
-    ToolSelection,
-    PathSelection,
+    SelectAiTool,
+    SelectGitTool,
+    SelectExplorer,
+    SelectPath,
 }
 
 /// Onboarding application state
 struct OnboardingApp {
-    tools: Vec<AiTool>,
-    list_state: ListState,
+    // AI tools
+    ai_tools: Vec<AiTool>,
+    ai_list_state: ListState,
+    selected_ai_tool: Option<AiTool>,
+    // Git tools
+    git_tools: Vec<GitTool>,
+    git_list_state: ListState,
+    selected_git_tool: Option<GitTool>,
+    // Explorer tools
+    explorer_tools: Vec<ExplorerTool>,
+    explorer_list_state: ListState,
+    selected_explorer_tool: Option<ExplorerTool>,
+    // Animation
     frame_index: usize,
     last_frame_time: Instant,
+    // State
     should_exit: bool,
-    selected_tool: Option<AiTool>,
     screen: Screen,
     path_input: String,
     cursor_position: usize,
@@ -108,8 +122,12 @@ struct OnboardingApp {
 
 impl OnboardingApp {
     fn new() -> Self {
-        let mut list_state = ListState::default();
-        list_state.select(Some(0));
+        let mut ai_list_state = ListState::default();
+        ai_list_state.select(Some(0));
+        let mut git_list_state = ListState::default();
+        git_list_state.select(Some(0));
+        let mut explorer_list_state = ListState::default();
+        explorer_list_state.select(Some(0));
 
         // Check if we're in a git repo
         let in_git_repo = git::get_root(None).is_ok();
@@ -120,13 +138,19 @@ impl OnboardingApp {
             .unwrap_or_else(|| "~".to_string());
 
         Self {
-            tools: AiTool::all().to_vec(),
-            list_state,
+            ai_tools: AiTool::all().to_vec(),
+            ai_list_state,
+            selected_ai_tool: None,
+            git_tools: GitTool::all().to_vec(),
+            git_list_state,
+            selected_git_tool: None,
+            explorer_tools: ExplorerTool::all().to_vec(),
+            explorer_list_state,
+            selected_explorer_tool: None,
             frame_index: 0,
             last_frame_time: Instant::now(),
             should_exit: false,
-            selected_tool: None,
-            screen: Screen::ToolSelection,
+            screen: Screen::SelectAiTool,
             path_input: default_path.clone(),
             cursor_position: default_path.len(),
             selected_path: None,
@@ -134,10 +158,33 @@ impl OnboardingApp {
         }
     }
 
-    fn next_tool(&mut self) {
-        let i = match self.list_state.selected() {
+    fn current_list_len(&self) -> usize {
+        match self.screen {
+            Screen::SelectAiTool => self.ai_tools.len(),
+            Screen::SelectGitTool => self.git_tools.len(),
+            Screen::SelectExplorer => self.explorer_tools.len(),
+            Screen::SelectPath => 0,
+        }
+    }
+
+    fn current_list_state(&mut self) -> &mut ListState {
+        match self.screen {
+            Screen::SelectAiTool => &mut self.ai_list_state,
+            Screen::SelectGitTool => &mut self.git_list_state,
+            Screen::SelectExplorer => &mut self.explorer_list_state,
+            Screen::SelectPath => &mut self.ai_list_state, // unused
+        }
+    }
+
+    fn next_item(&mut self) {
+        let len = self.current_list_len();
+        if len == 0 {
+            return;
+        }
+        let state = self.current_list_state();
+        let i = match state.selected() {
             Some(i) => {
-                if i >= self.tools.len() - 1 {
+                if i >= len - 1 {
                     0
                 } else {
                     i + 1
@@ -145,32 +192,70 @@ impl OnboardingApp {
             }
             None => 0,
         };
-        self.list_state.select(Some(i));
+        state.select(Some(i));
     }
 
-    fn previous_tool(&mut self) {
-        let i = match self.list_state.selected() {
+    fn previous_item(&mut self) {
+        let len = self.current_list_len();
+        if len == 0 {
+            return;
+        }
+        let state = self.current_list_state();
+        let i = match state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.tools.len() - 1
+                    len - 1
                 } else {
                     i - 1
                 }
             }
             None => 0,
         };
-        self.list_state.select(Some(i));
+        state.select(Some(i));
     }
 
-    fn select_current_tool(&mut self) {
-        if let Some(i) = self.list_state.selected() {
-            self.selected_tool = Some(self.tools[i]);
+    fn select_current(&mut self) {
+        match self.screen {
+            Screen::SelectAiTool => {
+                if let Some(i) = self.ai_list_state.selected() {
+                    self.selected_ai_tool = Some(self.ai_tools[i]);
+                    self.screen = Screen::SelectGitTool;
+                }
+            }
+            Screen::SelectGitTool => {
+                if let Some(i) = self.git_list_state.selected() {
+                    self.selected_git_tool = Some(self.git_tools[i].clone());
+                    self.screen = Screen::SelectExplorer;
+                }
+            }
+            Screen::SelectExplorer => {
+                if let Some(i) = self.explorer_list_state.selected() {
+                    self.selected_explorer_tool = Some(self.explorer_tools[i].clone());
+                    if !self.in_git_repo {
+                        self.screen = Screen::SelectPath;
+                    } else {
+                        self.should_exit = true;
+                    }
+                }
+            }
+            Screen::SelectPath => {}
+        }
+    }
 
-            // If not in a git repo, show path selection modal
-            if !self.in_git_repo {
-                self.screen = Screen::PathSelection;
-            } else {
-                self.should_exit = true;
+    fn go_back(&mut self) {
+        match self.screen {
+            Screen::SelectAiTool => self.should_exit = true,
+            Screen::SelectGitTool => {
+                self.screen = Screen::SelectAiTool;
+                self.selected_ai_tool = None;
+            }
+            Screen::SelectExplorer => {
+                self.screen = Screen::SelectGitTool;
+                self.selected_git_tool = None;
+            }
+            Screen::SelectPath => {
+                self.screen = Screen::SelectExplorer;
+                self.selected_explorer_tool = None;
             }
         }
     }
@@ -192,20 +277,16 @@ impl OnboardingApp {
 
     fn handle_key(&mut self, key: KeyCode) {
         match self.screen {
-            Screen::ToolSelection => match key {
-                KeyCode::Up | KeyCode::Char('k') => self.previous_tool(),
-                KeyCode::Down | KeyCode::Char('j') => self.next_tool(),
-                KeyCode::Enter | KeyCode::Char(' ') => self.select_current_tool(),
-                KeyCode::Esc | KeyCode::Char('q') => self.should_exit = true,
+            Screen::SelectAiTool | Screen::SelectGitTool | Screen::SelectExplorer => match key {
+                KeyCode::Up | KeyCode::Char('k') => self.previous_item(),
+                KeyCode::Down | KeyCode::Char('j') => self.next_item(),
+                KeyCode::Enter | KeyCode::Char(' ') => self.select_current(),
+                KeyCode::Esc | KeyCode::Char('q') => self.go_back(),
                 _ => {}
             },
-            Screen::PathSelection => match key {
+            Screen::SelectPath => match key {
                 KeyCode::Enter => self.confirm_path(),
-                KeyCode::Esc => {
-                    // Go back to tool selection
-                    self.screen = Screen::ToolSelection;
-                    self.selected_tool = None;
-                }
+                KeyCode::Esc => self.go_back(),
                 KeyCode::Backspace => {
                     if self.cursor_position > 0 {
                         self.path_input.remove(self.cursor_position - 1);
@@ -323,42 +404,111 @@ fn draw_ui(frame: &mut Frame, app: &mut OnboardingApp) {
     .alignment(Alignment::Center);
     frame.render_widget(subtitle, content_layout[2]);
 
+    // Dynamic content based on screen
+    let (instruction_text, block_title, items, list_state) = match &app.screen {
+        Screen::SelectAiTool => {
+            let items: Vec<ListItem> = app
+                .ai_tools
+                .iter()
+                .map(|tool| {
+                    let installed = which::which(tool.binary()).is_ok();
+                    let status = if installed {
+                        Span::styled(" [installed]", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled(" [not found]", Style::default().fg(Color::DarkGray))
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", tool.name()),
+                            Style::default().fg(Color::White),
+                        ),
+                        status,
+                    ]))
+                })
+                .collect();
+            (
+                "Select your AI coding assistant:",
+                " AI Tool (1/3) ",
+                items,
+                &mut app.ai_list_state,
+            )
+        }
+        Screen::SelectGitTool => {
+            let items: Vec<ListItem> = app
+                .git_tools
+                .iter()
+                .map(|tool| {
+                    let installed = which::which(tool.binary()).is_ok();
+                    let status = if installed {
+                        Span::styled(" [installed]", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled(" [not found]", Style::default().fg(Color::DarkGray))
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", tool.name()),
+                            Style::default().fg(Color::White),
+                        ),
+                        status,
+                    ]))
+                })
+                .collect();
+            (
+                "Select your git TUI (top-left panel):",
+                " Git Tool (2/3) ",
+                items,
+                &mut app.git_list_state,
+            )
+        }
+        Screen::SelectExplorer => {
+            let items: Vec<ListItem> = app
+                .explorer_tools
+                .iter()
+                .map(|tool| {
+                    let installed = which::which(tool.binary()).is_ok();
+                    let status = if installed {
+                        Span::styled(" [installed]", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled(" [not found]", Style::default().fg(Color::DarkGray))
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", tool.name()),
+                            Style::default().fg(Color::White),
+                        ),
+                        status,
+                    ]))
+                })
+                .collect();
+            (
+                "Select your file explorer (bottom-left panel):",
+                " Explorer (3/3) ",
+                items,
+                &mut app.explorer_list_state,
+            )
+        }
+        Screen::SelectPath => {
+            // Path selection is handled separately
+            draw_path_modal(frame, app);
+            return;
+        }
+    };
+
     // Instructions
     let instructions = Paragraph::new(vec![Line::from(Span::styled(
-        "Select your preferred AI coding assistant:",
+        instruction_text,
         Style::default().fg(Color::Yellow),
     ))])
     .alignment(Alignment::Center);
     frame.render_widget(instructions, content_layout[4]);
 
     // Tool list
-    let items: Vec<ListItem> = app
-        .tools
-        .iter()
-        .map(|tool| {
-            let installed = which::which(tool.binary()).is_ok();
-            let status = if installed {
-                Span::styled(" [installed] ", Style::default().fg(Color::Green))
-            } else {
-                Span::styled(" [not found] ", Style::default().fg(Color::Red))
-            };
-
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", tool.name()),
-                    Style::default().fg(Color::White),
-                ),
-                status,
-            ]))
-        })
-        .collect();
-
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(" AI Tool "),
+                .title(block_title),
         )
         .highlight_style(
             Style::default()
@@ -368,24 +518,19 @@ fn draw_ui(frame: &mut Frame, app: &mut OnboardingApp) {
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(list, content_layout[5], &mut app.list_state);
+    frame.render_stateful_widget(list, content_layout[5], list_state);
 
     // Footer with keybindings
     let footer = Paragraph::new(Line::from(vec![
         Span::styled("j/k", Style::default().fg(Color::Cyan)),
         Span::raw(" navigate  "),
         Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::raw(" select  "),
-        Span::styled("q", Style::default().fg(Color::Cyan)),
-        Span::raw(" quit"),
+        Span::raw(" next  "),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" back"),
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(footer, content_layout[6]);
-
-    // Draw path selection modal if active
-    if app.screen == Screen::PathSelection {
-        draw_path_modal(frame, app);
-    }
 }
 
 fn draw_path_modal(frame: &mut Frame, app: &OnboardingApp) {
@@ -494,11 +639,13 @@ fn draw_path_modal(frame: &mut Frame, app: &OnboardingApp) {
 
 /// Onboarding result
 pub struct OnboardingResult {
-    pub tool: AiTool,
+    pub ai_tool: AiTool,
+    pub git_tool: GitTool,
+    pub explorer_tool: ExplorerTool,
     pub path: Option<PathBuf>,
 }
 
-/// Run the onboarding TUI and return the selected tool and optional path
+/// Run the onboarding TUI and return the selected tools and optional path
 pub fn run_onboarding() -> Result<Option<OnboardingResult>> {
     // Setup terminal
     enable_raw_mode()?;
@@ -531,10 +678,21 @@ pub fn run_onboarding() -> Result<Option<OnboardingResult>> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
-    Ok(app.selected_tool.map(|tool| OnboardingResult {
-        tool,
-        path: app.selected_path,
-    }))
+    // Only return result if all tools were selected
+    if let (Some(ai_tool), Some(git_tool), Some(explorer_tool)) = (
+        app.selected_ai_tool,
+        app.selected_git_tool,
+        app.selected_explorer_tool,
+    ) {
+        Ok(Some(OnboardingResult {
+            ai_tool,
+            git_tool,
+            explorer_tool,
+            path: app.selected_path,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Check if onboarding is needed and run it
@@ -549,15 +707,22 @@ pub fn check_and_run_onboarding() -> Result<Option<PathBuf>> {
 
     // Run onboarding
     if let Some(result) = run_onboarding()? {
+        // Save names before moving
+        let ai_name = result.ai_tool.name().to_string();
+        let git_name = result.git_tool.name().to_string();
+        let explorer_name = result.explorer_tool.name().to_string();
+
         let config = Config {
-            ai_tool: result.tool,
+            ai_tool: result.ai_tool,
+            git_tool: result.git_tool,
+            explorer_tool: result.explorer_tool,
         };
         config.save()?;
 
         println!();
         println!(
-            "Configuration saved! Using {} as your AI tool.",
-            result.tool.name()
+            "Configuration saved! AI: {}, Git: {}, Explorer: {}",
+            ai_name, git_name, explorer_name
         );
         println!();
 
