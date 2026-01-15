@@ -8,5 +8,6 @@ description = "Terminal file explorer with git integration"
 [dependencies]
 chrono = "0.4"
 crossterm = "0.28"
+ratatui = "0.29"
 ignore = "0.4"
 trash = "5.1"

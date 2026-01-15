@@ -928,6 +928,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "ignore",
+ "ratatui",
  "trash",
 ]
 

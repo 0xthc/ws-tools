@@ -1,32 +1,35 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const SPINNER_RATE_MS: u128 = 50;
-
 use chrono::{DateTime, Local};
-use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+use crossterm::{
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+        MouseButton, MouseEvent, MouseEventKind,
+    },
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-use crossterm::style::{Attribute, Color, Print, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{
-    self, disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
-    LeaveAlternateScreen,
-};
-use crossterm::{execute, queue};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
+    Terminal,
+};
 use std::os::unix::fs::PermissionsExt;
 
+const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+const SPINNER_RATE_MS: u128 = 50;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> io::Result<()> {
-    // Handle --version and --help before anything else
     if let Some(arg) = env::args().nth(1) {
         match arg.as_str() {
             "--version" | "-V" => {
@@ -69,19 +72,18 @@ fn main() -> io::Result<()> {
     expand_changed_paths(&mut root_node, &root_abs, &gitignore, &git_status)?;
 
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, Hide, EnableMouseCapture)?;
-    let _guard = TerminalGuard;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(root_node, gitignore, git_status, root_abs);
     let mut last_refresh = Instant::now();
     let mut has_focus = true;
+
     loop {
         app.refresh_visible();
-        begin_sync_output(&mut stdout)?;
-        render(&mut stdout, &mut app)?;
-        end_sync_output(&mut stdout)?;
-        stdout.flush()?;
+        terminal.draw(|frame| render(frame, &mut app))?;
 
         if event::poll(Duration::from_millis(SPINNER_RATE_MS as u64))? {
             match event::read()? {
@@ -117,27 +119,14 @@ fn main() -> io::Result<()> {
         }
     }
 
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+
     Ok(())
-}
-
-fn begin_sync_output(stdout: &mut io::Stdout) -> io::Result<()> {
-    stdout.write_all(b"\x1b[?2026h")?;
-    Ok(())
-}
-
-fn end_sync_output(stdout: &mut io::Stdout) -> io::Result<()> {
-    stdout.write_all(b"\x1b[?2026l")?;
-    Ok(())
-}
-
-struct TerminalGuard;
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let mut stdout = io::stdout();
-        let _ = execute!(stdout, Show, LeaveAlternateScreen, DisableMouseCapture);
-    }
 }
 
 struct App {
@@ -301,8 +290,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> io::Result<()> {
     if let Some(viewer) = app.viewer.as_mut() {
-        let (_, height) = terminal::size()?;
-        let view_height = height.saturating_sub(2) as usize;
+        let height = crossterm::terminal::size()?.1 as usize;
+        let view_height = height.saturating_sub(2);
         let max_scroll = viewer.lines.len().saturating_sub(view_height);
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -328,8 +317,8 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> io::Result<()> {
             app.last_click = None;
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            let (_, height) = terminal::size()?;
-            let view_height = height.saturating_sub(2) as usize;
+            let height = crossterm::terminal::size()?.1 as usize;
+            let view_height = height.saturating_sub(2);
             let row = mouse.row as usize;
             if row == 0 || row > view_height {
                 return Ok(());
@@ -392,8 +381,8 @@ fn resync(app: &mut App) -> io::Result<()> {
 }
 
 fn handle_viewer_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
-    let (width, height) = terminal::size()?;
-    let view_height = height.saturating_sub(2) as usize;
+    let height = crossterm::terminal::size()?.1 as usize;
+    let view_height = height.saturating_sub(2);
     let max_scroll = app
         .viewer
         .as_ref()
@@ -434,7 +423,6 @@ fn handle_viewer_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         }
     }
 
-    let _ = width;
     Ok(false)
 }
 
@@ -464,7 +452,7 @@ fn open_with_bat(app: &mut App) -> io::Result<()> {
         return Ok(());
     }
 
-    let (width, _) = terminal::size().unwrap_or((80, 24));
+    let width = crossterm::terminal::size()?.0;
     let output = std::process::Command::new("bat")
         .arg("--paging=never")
         .arg("--color=always")
@@ -615,16 +603,33 @@ fn confirm_delete(app: &mut App) -> io::Result<()> {
     Ok(())
 }
 
-fn render(stdout: &mut io::Stdout, app: &mut App) -> io::Result<()> {
-    let (width, height) = terminal::size()?;
-    let width = width as usize;
-    let height = height as usize;
-    let view_height = height.saturating_sub(2);
+fn render(frame: &mut ratatui::Frame, app: &mut App) {
+    let area = frame.area();
+
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // Title bar
+        Constraint::Min(1),    // Tree view
+        Constraint::Length(1), // Status bar
+    ])
+    .split(area);
 
     if app.viewer.is_some() {
-        return render_viewer(stdout, app, width, view_height);
+        render_viewer(frame, app, chunks[0], chunks[1], chunks[2]);
+    } else {
+        render_tree(frame, app, chunks[0], chunks[1], chunks[2]);
     }
+}
 
+fn render_tree(
+    frame: &mut ratatui::Frame,
+    app: &mut App,
+    title_area: Rect,
+    tree_area: Rect,
+    status_area: Rect,
+) {
+    let view_height = tree_area.height as usize;
+
+    // Adjust scroll
     if app.focus < app.scroll {
         app.scroll = app.focus;
     }
@@ -632,479 +637,210 @@ fn render(stdout: &mut io::Stdout, app: &mut App) -> io::Result<()> {
         app.scroll = app.focus - view_height + 1;
     }
 
-    queue!(stdout, MoveTo(0, 0))?;
+    // Title bar
+    let title = if let Some(name) = app.root_path.file_name().and_then(|n| n.to_str()) {
+        format!("texplore - {}", name)
+    } else {
+        format!("texplore - {}", app.root_path.display())
+    };
+    let title_widget = Paragraph::new(title).style(Style::default().add_modifier(Modifier::DIM));
+    frame.render_widget(title_widget, title_area);
 
-    render_top_bar(stdout, app, width)?;
-
-    for (row, entry) in app
+    // Tree lines
+    let use_color = should_color();
+    let lines: Vec<Line> = app
         .visible
         .iter()
         .skip(app.scroll)
         .take(view_height)
         .enumerate()
-    {
-        let y = row as u16 + 1;
+        .map(|(row, entry)| {
+            let focused = app.focus == app.scroll + row;
+            build_tree_line(entry, focused, use_color, tree_area.width as usize)
+        })
+        .collect();
 
-        queue!(stdout, MoveTo(0, y), Clear(ClearType::UntilNewLine))?;
-        let focused = app.focus == app.scroll + row;
-        if focused {
-            queue!(stdout, SetAttribute(Attribute::Reverse))?;
-        }
-        render_tree_line(stdout, entry, width, focused)?;
-        queue!(
-            stdout,
-            SetAttribute(Attribute::Reset),
-            SetForegroundColor(Color::Reset)
-        )?;
-    }
+    let tree_widget = Paragraph::new(lines);
+    frame.render_widget(tree_widget, tree_area);
 
-    let status_line = if app.refreshing {
+    // Status bar
+    let status_text = if app.refreshing {
         format!("{} {}", spinner_frame(), app.status)
     } else {
         app.status.clone()
     };
-    queue!(
-        stdout,
-        MoveTo(0, (view_height + 1) as u16),
-        Clear(ClearType::UntilNewLine),
-        Print(clip_to_width(&status_line, width))
-    )?;
-
-    Ok(())
+    let status_widget = Paragraph::new(status_text);
+    frame.render_widget(status_widget, status_area);
 }
 
 fn render_viewer(
-    stdout: &mut io::Stdout,
+    frame: &mut ratatui::Frame,
     app: &mut App,
-    width: usize,
-    view_height: usize,
-) -> io::Result<()> {
-    queue!(stdout, MoveTo(0, 0))?;
-
-    render_top_bar(stdout, app, width)?;
-
+    title_area: Rect,
+    content_area: Rect,
+    status_area: Rect,
+) {
     let viewer = match app.viewer.as_ref() {
-        Some(viewer) => viewer,
-        None => return Ok(()),
+        Some(v) => v,
+        None => return,
     };
 
-    let lines = &viewer.lines;
-    let max_scroll = lines.len().saturating_sub(view_height);
+    // Title bar
+    let title = if let Some(name) = app.root_path.file_name().and_then(|n| n.to_str()) {
+        format!("texplore - {}", name)
+    } else {
+        format!("texplore - {}", app.root_path.display())
+    };
+    let title_widget = Paragraph::new(title).style(Style::default().add_modifier(Modifier::DIM));
+    frame.render_widget(title_widget, title_area);
+
+    // Content
+    let view_height = content_area.height as usize;
+    let max_scroll = viewer.lines.len().saturating_sub(view_height);
     let scroll = viewer.scroll.min(max_scroll);
 
-    for row in 0..view_height {
-        let idx = scroll + row;
-        let line = lines.get(idx);
-        queue!(
-            stdout,
-            MoveTo(0, row as u16 + 1),
-            Clear(ClearType::UntilNewLine),
-        )?;
-        if let Some(line) = line {
-            render_styled_line(stdout, line, width)?;
-        }
-    }
+    let lines: Vec<Line> = viewer
+        .lines
+        .iter()
+        .skip(scroll)
+        .take(view_height)
+        .map(|styled_line| build_styled_line(styled_line))
+        .collect();
 
+    let content_widget = Paragraph::new(lines);
+    frame.render_widget(content_widget, content_area);
+
+    // Status bar
     let status = format!("{} | q close  j/k scroll  gg/G top/bottom", viewer.title);
-    queue!(
-        stdout,
-        MoveTo(0, (view_height + 1) as u16),
-        Clear(ClearType::UntilNewLine),
-        Print(clip_to_width(&status, width))
-    )?;
-
-    Ok(())
+    let status_widget = Paragraph::new(status);
+    frame.render_widget(status_widget, status_area);
 }
 
-fn render_top_bar(stdout: &mut io::Stdout, app: &App, width: usize) -> io::Result<()> {
-    let title = if let Some(name) = app.root_path.file_name().and_then(|n| n.to_str()) {
-        format!("texplore — {}", name)
-    } else {
-        format!("texplore — {}", app.root_path.display())
-    };
-    if width == 0 {
-        return Ok(());
-    }
-    queue!(stdout, MoveTo(0, 0), Clear(ClearType::UntilNewLine))?;
-    let title = clip_to_width(&title, width);
-    let pad = width.saturating_sub(title.chars().count());
-    let padding = " ".repeat(pad);
-    queue!(stdout, SetAttribute(Attribute::Dim))?;
-    queue!(stdout, Print(title), Print(padding))?;
-    queue!(
-        stdout,
-        SetAttribute(Attribute::Reset),
-        SetForegroundColor(Color::Reset)
-    )?;
-    Ok(())
-}
-
-fn parse_ansi_lines(text: &str) -> Vec<StyledLine> {
-    text.lines()
-        .map(|line| StyledLine {
-            spans: parse_ansi_spans(line),
-        })
-        .collect()
-}
-
-fn parse_ansi_spans(line: &str) -> Vec<StyledSpan> {
+fn build_tree_line(entry: &VisibleEntry, focused: bool, use_color: bool, width: usize) -> Line<'_> {
     let mut spans = Vec::new();
-    let mut style = TextStyle::default();
-    let mut buf = String::new();
-    let mut chars = line.chars().peekable();
 
-    while let Some(ch) = chars.next() {
-        if ch == '\u{001b}' {
-            if let Some('[') = chars.peek().copied() {
-                let _ = chars.next();
-                let mut codes = String::new();
-                for c in chars.by_ref() {
-                    if c == 'm' {
-                        break;
-                    }
-                    codes.push(c);
-                }
-                if !buf.is_empty() {
-                    spans.push(StyledSpan {
-                        text: buf.clone(),
-                        style: style.clone(),
-                    });
-                    buf.clear();
-                }
-                apply_sgr(&codes, &mut style);
-                continue;
-            }
+    let base_style = if focused {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default()
+    };
+
+    // Prefix (tree lines)
+    if !entry.prefix.is_empty() {
+        let prefix_style = if use_color && !focused {
+            base_style.fg(Color::DarkGray).add_modifier(Modifier::DIM)
+        } else {
+            base_style
+        };
+        spans.push(Span::styled(format!("{} ", entry.prefix), prefix_style));
+    }
+
+    // Icon
+    let icon_color = if use_color && !focused {
+        color_for_key(&entry.icon_key)
+    } else {
+        Color::Reset
+    };
+    spans.push(Span::styled(
+        format!("{} ", entry.icon),
+        base_style.fg(icon_color),
+    ));
+
+    // Name
+    let name_style = if entry.ignored && !focused {
+        base_style.add_modifier(Modifier::DIM)
+    } else if use_color && !focused {
+        base_style.fg(color_for_key(&entry.icon_key))
+    } else {
+        base_style
+    };
+    spans.push(Span::styled(entry.name.clone(), name_style));
+
+    // Calculate current length for right-aligned content
+    let current_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+
+    // Build suffix parts
+    let mut suffix_parts: Vec<(String, Color)> = Vec::new();
+
+    if !entry.status.trim().is_empty() {
+        let color = if use_color {
+            color_for_status(&entry.status)
+        } else {
+            Color::Reset
+        };
+        suffix_parts.push((entry.status.clone(), color));
+    }
+
+    if !entry.modified.is_empty() {
+        suffix_parts.push((entry.modified.clone(), Color::DarkGray));
+    }
+
+    if entry.is_dir && entry.subtree_changes > 0 {
+        suffix_parts.push((format!("Δ{}", entry.subtree_changes), Color::Yellow));
+    }
+
+    if !entry.metrics.is_empty() {
+        suffix_parts.push((entry.metrics.clone(), Color::DarkGray));
+    }
+
+    // Calculate suffix length
+    let suffix_len: usize = suffix_parts
+        .iter()
+        .map(|(s, _)| s.chars().count())
+        .sum::<usize>()
+        + suffix_parts.len().saturating_sub(1) * 2; // separators
+
+    // Add padding and suffix if there's room
+    if !suffix_parts.is_empty() && current_len + 1 + suffix_len < width {
+        let pad = width.saturating_sub(current_len).saturating_sub(suffix_len);
+        if pad > 0 {
+            spans.push(Span::styled(" ".repeat(pad), base_style));
         }
-        buf.push(ch);
-    }
 
-    if !buf.is_empty() {
-        spans.push(StyledSpan { text: buf, style });
-    }
-
-    spans
-}
-
-fn apply_sgr(codes: &str, style: &mut TextStyle) {
-    if codes.is_empty() {
-        *style = TextStyle::default();
-        return;
-    }
-
-    let parts = codes.split(';').filter(|p| !p.is_empty());
-    let mut codes_vec = Vec::new();
-    for part in parts {
-        if let Ok(value) = part.parse::<u16>() {
-            codes_vec.push(value);
-        }
-    }
-
-    let mut i = 0;
-    while i < codes_vec.len() {
-        match codes_vec[i] {
-            0 => *style = TextStyle::default(),
-            1 => style.bold = true,
-            2 => style.dim = true,
-            3 => style.italic = true,
-            4 => style.underline = true,
-            22 => {
-                style.bold = false;
-                style.dim = false;
+        for (i, (text, color)) in suffix_parts.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("  ", base_style));
             }
-            23 => style.italic = false,
-            24 => style.underline = false,
-            39 => style.fg = None,
-            49 => style.bg = None,
-            30..=37 | 90..=97 => style.fg = Some(ansi_color(codes_vec[i])),
-            40..=47 | 100..=107 => style.bg = Some(ansi_color(codes_vec[i] - 10)),
-            38 => {
-                if let Some((color, consumed)) = parse_extended_color(&codes_vec[i + 1..]) {
-                    style.fg = Some(color);
-                    i += consumed;
-                }
-            }
-            48 => {
-                if let Some((color, consumed)) = parse_extended_color(&codes_vec[i + 1..]) {
-                    style.bg = Some(color);
-                    i += consumed;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-}
-
-fn parse_extended_color(codes: &[u16]) -> Option<(Color, usize)> {
-    match codes.first().copied() {
-        Some(5) => codes.get(1).map(|n| (Color::AnsiValue(*n as u8), 2)),
-        Some(2) => {
-            if codes.len() >= 4 {
-                Some((
-                    Color::Rgb {
-                        r: codes[1] as u8,
-                        g: codes[2] as u8,
-                        b: codes[3] as u8,
-                    },
-                    4,
-                ))
+            let style = if focused {
+                base_style
             } else {
-                None
-            }
+                base_style.fg(color)
+            };
+            spans.push(Span::styled(text, style));
         }
-        _ => None,
     }
+
+    Line::from(spans)
 }
 
-fn ansi_color(code: u16) -> Color {
-    match code {
-        30 => Color::Black,
-        31 => Color::DarkRed,
-        32 => Color::DarkGreen,
-        33 => Color::DarkYellow,
-        34 => Color::DarkBlue,
-        35 => Color::DarkMagenta,
-        36 => Color::DarkCyan,
-        37 => Color::Grey,
-        90 => Color::DarkGrey,
-        91 => Color::Red,
-        92 => Color::Green,
-        93 => Color::Yellow,
-        94 => Color::Blue,
-        95 => Color::Magenta,
-        96 => Color::Cyan,
-        97 => Color::White,
-        _ => Color::White,
-    }
-}
-
-fn render_styled_line(stdout: &mut io::Stdout, line: &StyledLine, width: usize) -> io::Result<()> {
-    let mut printed = 0usize;
-    for span in &line.spans {
-        if printed >= width {
-            break;
-        }
-        let remaining = width - printed;
-        let text: String = span.text.chars().take(remaining).collect();
-        if text.is_empty() {
-            continue;
-        }
-        apply_text_style(stdout, &span.style)?;
-        queue!(stdout, Print(text))?;
-        printed += span.text.chars().take(remaining).count();
-    }
-    queue!(
-        stdout,
-        SetAttribute(Attribute::Reset),
-        SetForegroundColor(Color::Reset)
-    )?;
-    Ok(())
-}
-
-fn render_tree_line(
-    stdout: &mut io::Stdout,
-    entry: &VisibleEntry,
-    width: usize,
-    focused: bool,
-) -> io::Result<()> {
-    let mut printed = 0usize;
-    let use_color = should_color() && !focused;
-    let prefix_color = if use_color {
-        Some(Color::DarkGrey)
-    } else {
-        None
-    };
-    let icon_color = if use_color {
-        Some(color_for_key(&entry.icon_key))
-    } else {
-        None
-    };
-
-    let prefix = if entry.prefix.is_empty() {
-        String::new()
-    } else {
-        format!("{} ", entry.prefix)
-    };
-    if use_color {
-        queue!(stdout, SetAttribute(Attribute::Dim))?;
-    }
-    printed += print_segment(stdout, &prefix, prefix_color, width - printed)?;
-    if use_color {
-        queue!(stdout, SetAttribute(Attribute::NormalIntensity))?;
-    }
-
-    let icon_segment = format!("{} ", entry.icon);
-    printed += print_segment(stdout, &icon_segment, icon_color, width - printed)?;
-
-    if entry.ignored {
-        queue!(stdout, SetAttribute(Attribute::Dim))?;
-    }
-    let name_color = if use_color {
-        Some(color_for_key(&entry.icon_key))
-    } else {
-        None
-    };
-    printed += print_segment(stdout, &entry.name, name_color, width - printed)?;
-
-    if width > 10 {
-        let status_text = if entry.status.trim().is_empty() {
-            None
-        } else {
-            Some(entry.status.clone())
-        };
-        let modified_text = if entry.modified.is_empty() {
-            None
-        } else {
-            Some(entry.modified.clone())
-        };
-        let metrics_text = if entry.metrics.is_empty() {
-            None
-        } else {
-            Some(entry.metrics.clone())
-        };
-        let subtree_text = if entry.is_dir && entry.subtree_changes > 0 {
-            Some(format!("Δ{}", entry.subtree_changes))
-        } else {
-            None
-        };
-
-        let mut suffix_len = 0usize;
-        if let Some(text) = &status_text {
-            suffix_len += text.chars().count();
-        }
-        if let Some(text) = &modified_text {
-            if suffix_len > 0 {
-                suffix_len += 2;
+fn build_styled_line(styled_line: &StyledLine) -> Line<'_> {
+    let spans: Vec<Span> = styled_line
+        .spans
+        .iter()
+        .map(|span| {
+            let mut style = Style::default();
+            if let Some(fg) = span.style.fg {
+                style = style.fg(fg);
             }
-            suffix_len += text.chars().count();
-        }
-        if let Some(text) = &subtree_text {
-            if suffix_len > 0 {
-                suffix_len += 2;
+            if let Some(bg) = span.style.bg {
+                style = style.bg(bg);
             }
-            suffix_len += text.chars().count();
-        }
-        if let Some(text) = &metrics_text {
-            if suffix_len > 0 {
-                suffix_len += 2;
+            if span.style.bold {
+                style = style.add_modifier(Modifier::BOLD);
             }
-            suffix_len += text.chars().count();
-        }
-
-        if suffix_len > 0 {
-            if printed + 1 + suffix_len < width {
-                let pad = width - suffix_len - printed;
-                let padding = " ".repeat(pad.saturating_sub(1));
-                printed += print_segment(stdout, " ", None, width - printed)?;
-                printed += print_segment(stdout, &padding, None, width - printed)?;
+            if span.style.dim {
+                style = style.add_modifier(Modifier::DIM);
             }
-
-            let mut first = true;
-            if let Some(text) = status_text {
-                let color = if use_color {
-                    Some(color_for_status(&text))
-                } else {
-                    None
-                };
-                printed += print_segment(stdout, &text, color, width - printed)?;
-                first = false;
+            if span.style.italic {
+                style = style.add_modifier(Modifier::ITALIC);
             }
-            if let Some(text) = modified_text {
-                if !first {
-                    printed += print_segment(stdout, "  ", None, width - printed)?;
-                }
-                let color = if use_color {
-                    Some(Color::DarkGrey)
-                } else {
-                    None
-                };
-                printed += print_segment(stdout, &text, color, width - printed)?;
-                first = false;
+            if span.style.underline {
+                style = style.add_modifier(Modifier::UNDERLINED);
             }
-            if let Some(text) = subtree_text {
-                if !first {
-                    printed += print_segment(stdout, "  ", None, width - printed)?;
-                }
-                let color = if use_color {
-                    Some(Color::DarkYellow)
-                } else {
-                    None
-                };
-                printed += print_segment(stdout, &text, color, width - printed)?;
-                first = false;
-            }
-            if let Some(text) = metrics_text {
-                if !first {
-                    printed += print_segment(stdout, "  ", None, width - printed)?;
-                }
-                let color = if use_color {
-                    Some(Color::DarkGrey)
-                } else {
-                    None
-                };
-                let _ = print_segment(stdout, &text, color, width - printed)?;
-            }
-        }
-    }
-    let _ = printed;
-    Ok(())
-}
-
-fn print_segment(
-    stdout: &mut io::Stdout,
-    text: &str,
-    color: Option<Color>,
-    remaining: usize,
-) -> io::Result<usize> {
-    if remaining == 0 || text.is_empty() {
-        return Ok(0);
-    }
-    let clipped: String = text.chars().take(remaining).collect();
-    if clipped.is_empty() {
-        return Ok(0);
-    }
-    // Keep focus highlight intact; caller resets after the full line.
-    if let Some(color) = color {
-        queue!(stdout, SetForegroundColor(color))?;
-    }
-    queue!(stdout, Print(clipped))?;
-    Ok(text.chars().take(remaining).count())
-}
-
-fn apply_text_style(stdout: &mut io::Stdout, style: &TextStyle) -> io::Result<()> {
-    queue!(stdout, SetAttribute(Attribute::Reset))?;
-    if let Some(fg) = style.fg {
-        queue!(stdout, SetForegroundColor(fg))?;
-    } else {
-        queue!(stdout, SetForegroundColor(Color::Reset))?;
-    }
-    if let Some(bg) = style.bg {
-        queue!(stdout, crossterm::style::SetBackgroundColor(bg))?;
-    }
-    if style.bold {
-        queue!(stdout, SetAttribute(Attribute::Bold))?;
-    }
-    if style.dim {
-        queue!(stdout, SetAttribute(Attribute::Dim))?;
-    }
-    if style.italic {
-        queue!(stdout, SetAttribute(Attribute::Italic))?;
-    }
-    if style.underline {
-        queue!(stdout, SetAttribute(Attribute::Underlined))?;
-    }
-    Ok(())
-}
-
-fn clip_to_width(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    for ch in text.chars().take(width) {
-        out.push(ch);
-    }
-    out
+            Span::styled(span.text.clone(), style)
+        })
+        .collect();
+    Line::from(spans)
 }
 
 fn spinner_frame() -> &'static str {
@@ -1269,13 +1005,16 @@ fn parent_at_mut<'a>(node: &'a mut Node, indices: &[usize]) -> Option<&'a mut No
 
 fn icon_for(path: &Path, meta: &fs::Metadata, file_type: fs::FileType) -> (&'static str, String) {
     if file_type.is_symlink() {
-        return ("", "symlink".to_string());
+        let key = "symlink".to_string();
+        return (icon_for_key(&key), key);
     }
     if meta.is_dir() {
-        return ("", "directory".to_string());
+        let key = "directory".to_string();
+        return (icon_for_key(&key), key);
     }
     if is_executable(meta) {
-        return ("", "executable".to_string());
+        let key = "executable".to_string();
+        return (icon_for_key(&key), key);
     }
 
     let icon_key = icon_key_for(path);
@@ -1311,13 +1050,13 @@ fn sort_key(path: &Path) -> String {
 }
 
 fn build_gitignore(root: &Path) -> Option<Gitignore> {
-    let mut builder = GitignoreBuilder::new(root);
-    let ignore_path = root.join(".gitignore");
-    if ignore_path.is_file() {
-        if let Some(err) = builder.add(ignore_path) {
-            eprintln!("warn: {}", err);
-            return None;
-        }
+    let git_root = git_toplevel(root)?;
+    let mut builder = GitignoreBuilder::new(&git_root);
+
+    // Add root .gitignore - this handles patterns like /target/
+    let root_ignore = git_root.join(".gitignore");
+    if root_ignore.is_file() {
+        let _ = builder.add(&root_ignore);
     }
 
     match builder.build() {
@@ -1497,94 +1236,97 @@ fn icon_key_for_suffix(suffix: &str) -> Option<String> {
 
 fn icon_for_key(key: &str) -> &'static str {
     match key {
-        "astro" => "󰑣",
-        "audio" => "󰎆",
-        "backup" => "󰁯",
-        "bicep" => "󰘦",
-        "bun" => "󰳯",
-        "c" => "",
-        "cairo" => "󰈙",
-        "code" => "󰅩",
-        "coffeescript" => "",
-        "cpp" => "",
-        "crystal" => "",
-        "csharp" => "󰌛",
-        "csproj" => "󰌛",
-        "css" => "",
-        "cue" => "󰲹",
-        "dart" => "",
-        "diff" => "",
-        "docker" => "󰡨",
-        "document" => "󰈙",
-        "elixir" => "",
-        "elm" => "",
-        "erlang" => "",
-        "eslint" => "󰱺",
-        "font" => "󰛖",
-        "fsharp" => "",
-        "fsproj" => "",
-        "gitlab" => "󰮠",
-        "gleam" => "󰦥",
-        "go" => "",
-        "graphql" => "󰡷",
-        "haskell" => "",
-        "hcl" => "󰤇",
-        "heroku" => "",
-        "html" => "",
-        "image" => "󰈟",
-        "java" => "",
-        "javascript" => "",
-        "json" => "󰘦",
-        "julia" => "",
-        "kdl" => "󰗨",
-        "kotlin" => "",
-        "lock" => "󰌾",
-        "log" => "󰌱",
-        "lua" => "",
-        "luau" => "󰢱",
-        "markdown" => "",
-        "metal" => "󰙨",
-        "nim" => "",
-        "nix" => "󰜗",
-        "ocaml" => "",
-        "odin" => "󰅩",
-        "phoenix" => "󰢬",
-        "php" => "",
-        "prettier" => "󰣆",
-        "prisma" => "󰔷",
-        "puppet" => "󰚩",
-        "python" => "",
-        "r" => "󰟔",
-        "react" => "",
-        "roc" => "󰫏",
-        "ruby" => "",
-        "rust" => "",
-        "sass" => "",
-        "scala" => "",
-        "settings" => "󰒓",
-        "solidity" => "󰡪",
-        "storage" => "󰆼",
-        "stylelint" => "󰱺",
-        "surrealql" => "󰋘",
-        "svelte" => "",
-        "swift" => "",
-        "tcl" => "󰛓",
-        "template" => "󰙨",
-        "terminal" => "",
-        "terraform" => "󰋘",
-        "toml" => "󰰤",
-        "typescript" => "",
-        "v" => "󰙱",
-        "vbproj" => "󰐫",
-        "vcs" => "󰊢",
-        "video" => "󰈫",
-        "vs_sln" => "󰘐",
-        "vs_suo" => "󰘐",
-        "vue" => "󰡄",
-        "vyper" => "󰯲",
-        "wgsl" => "󰨞",
-        "zig" => "",
-        _ => "󰈙",
+        "directory" => "\u{f07b}",    // nf-fa-folder
+        "symlink" => "\u{f0c1}",      // nf-fa-link
+        "executable" => "\u{f489}",   // nf-oct-terminal
+        "astro" => "\u{e6b3}",        // nf-seti-astro
+        "audio" => "\u{f001}",        // nf-fa-music
+        "backup" => "\u{f0c7}",       // nf-fa-save
+        "bicep" => "\u{ebd8}",        // nf-md-arm_flex
+        "bun" => "\u{e76f}",          // nf-dev-javascript_badge
+        "c" => "\u{e61e}",            // nf-custom-c
+        "cairo" => "\u{f15c}",        // nf-fa-file_text
+        "code" => "\u{f121}",         // nf-fa-code
+        "coffeescript" => "\u{e751}", // nf-dev-coffeescript
+        "cpp" => "\u{e61d}",          // nf-custom-cpp
+        "crystal" => "\u{e7a3}",      // nf-dev-ruby_rough
+        "csharp" => "\u{f81a}",       // nf-mdi-language_csharp
+        "csproj" => "\u{f81a}",       // nf-mdi-language_csharp
+        "css" => "\u{e749}",          // nf-dev-css3
+        "cue" => "\u{f15c}",          // nf-fa-file_text
+        "dart" => "\u{e798}",         // nf-dev-dart
+        "diff" => "\u{f440}",         // nf-oct-diff
+        "docker" => "\u{f308}",       // nf-linux-docker
+        "document" => "\u{f15c}",     // nf-fa-file_text
+        "elixir" => "\u{e62d}",       // nf-custom-elixir
+        "elm" => "\u{e62c}",          // nf-custom-elm
+        "erlang" => "\u{e7b1}",       // nf-dev-erlang
+        "eslint" => "\u{e799}",       // nf-dev-eslint
+        "font" => "\u{f031}",         // nf-fa-font
+        "fsharp" => "\u{e7a7}",       // nf-dev-fsharp
+        "fsproj" => "\u{e7a7}",       // nf-dev-fsharp
+        "gitlab" => "\u{f296}",       // nf-fa-gitlab
+        "gleam" => "\u{f0e7}",        // nf-fa-bolt
+        "go" => "\u{e626}",           // nf-custom-go
+        "graphql" => "\u{e662}",      // nf-custom-graphql
+        "haskell" => "\u{e777}",      // nf-dev-haskell
+        "hcl" => "\u{f1bb}",          // nf-fa-file_code_o
+        "heroku" => "\u{e77b}",       // nf-dev-heroku
+        "html" => "\u{e736}",         // nf-dev-html5
+        "image" => "\u{f03e}",        // nf-fa-image
+        "java" => "\u{e738}",         // nf-dev-java
+        "javascript" => "\u{e74e}",   // nf-dev-javascript
+        "json" => "\u{e60b}",         // nf-seti-json
+        "julia" => "\u{e624}",        // nf-custom-julia
+        "kdl" => "\u{f15c}",          // nf-fa-file_text
+        "kotlin" => "\u{e634}",       // nf-custom-kotlin
+        "lock" => "\u{f023}",         // nf-fa-lock
+        "log" => "\u{f0f6}",          // nf-fa-file_text_o
+        "lua" => "\u{e620}",          // nf-custom-lua
+        "luau" => "\u{e620}",         // nf-custom-lua
+        "markdown" => "\u{e73e}",     // nf-dev-markdown
+        "metal" => "\u{f121}",        // nf-fa-code
+        "nim" => "\u{f6a4}",          // nf-mdi-crown
+        "nix" => "\u{f313}",          // nf-linux-nixos
+        "ocaml" => "\u{e67a}",        // nf-seti-ocaml
+        "odin" => "\u{f121}",         // nf-fa-code
+        "phoenix" => "\u{e62d}",      // nf-custom-elixir
+        "php" => "\u{e73d}",          // nf-dev-php
+        "prettier" => "\u{e6b4}",     // nf-seti-prettier
+        "prisma" => "\u{e684}",       // nf-seti-prisma
+        "puppet" => "\u{e631}",       // nf-custom-puppet
+        "python" => "\u{e73c}",       // nf-dev-python
+        "r" => "\u{f25d}",            // nf-fa-registered
+        "react" => "\u{e7ba}",        // nf-dev-react
+        "roc" => "\u{f121}",          // nf-fa-code
+        "ruby" => "\u{e791}",         // nf-dev-ruby
+        "rust" => "\u{e7a8}",         // nf-dev-rust
+        "sass" => "\u{e74b}",         // nf-dev-sass
+        "scala" => "\u{e737}",        // nf-dev-scala
+        "settings" => "\u{f013}",     // nf-fa-gear
+        "solidity" => "\u{f0ac}",     // nf-fa-globe
+        "storage" => "\u{f1c0}",      // nf-fa-database
+        "stylelint" => "\u{e799}",    // nf-dev-eslint
+        "surrealql" => "\u{f1c0}",    // nf-fa-database
+        "svelte" => "\u{e697}",       // nf-seti-svelte
+        "swift" => "\u{e755}",        // nf-dev-swift
+        "tcl" => "\u{f121}",          // nf-fa-code
+        "template" => "\u{f1c9}",     // nf-fa-file_code_o
+        "terminal" => "\u{f120}",     // nf-fa-terminal
+        "terraform" => "\u{e69a}",    // nf-seti-terraform
+        "toml" => "\u{e6b2}",         // nf-seti-toml
+        "typescript" => "\u{e628}",   // nf-seti-typescript
+        "v" => "\u{f121}",            // nf-fa-code
+        "vbproj" => "\u{f121}",       // nf-fa-code
+        "vcs" => "\u{f1d3}",          // nf-fa-git_square
+        "video" => "\u{f03d}",        // nf-fa-video_camera
+        "vs_sln" => "\u{e70c}",       // nf-dev-visualstudio
+        "vs_suo" => "\u{e70c}",       // nf-dev-visualstudio
+        "vue" => "\u{e6a0}",          // nf-seti-vue
+        "vyper" => "\u{f0ac}",        // nf-fa-globe
+        "wgsl" => "\u{f121}",         // nf-fa-code
+        "zig" => "\u{f0e7}",          // nf-fa-bolt
+        _ => "\u{f15c}",              // nf-fa-file_text
     }
 }
 
@@ -1596,12 +1338,12 @@ fn color_for_key(key: &str) -> Color {
         "audio" | "video" => Color::Magenta,
         "image" => Color::Yellow,
         "document" | "markdown" => Color::Yellow,
-        "json" | "yaml" | "toml" | "settings" => Color::DarkYellow,
+        "json" | "yaml" | "toml" | "settings" => Color::Yellow,
         "rust" | "go" | "python" | "javascript" | "typescript" | "cpp" | "c" | "java"
         | "kotlin" | "csharp" | "ruby" | "php" | "swift" => Color::Green,
         "gitlab" | "vcs" => Color::Red,
-        "lock" => Color::DarkGrey,
-        "log" => Color::DarkGrey,
+        "lock" => Color::DarkGray,
+        "log" => Color::DarkGray,
         _ => Color::White,
     }
 }
@@ -1623,7 +1365,7 @@ fn color_for_status(status: &str) -> Color {
     if x == 'M' || y == 'M' {
         return Color::Blue;
     }
-    Color::DarkGrey
+    Color::DarkGray
 }
 
 fn format_modified(meta: &fs::Metadata) -> String {
@@ -1657,10 +1399,43 @@ fn should_color() -> bool {
 }
 
 fn is_ignored(gitignore: &Option<Gitignore>, path: &Path, is_dir: bool) -> bool {
-    match gitignore {
-        Some(ignore) => ignore.matched_path_or_any_parents(path, is_dir).is_ignore(),
-        None => false,
+    // Check root gitignore first
+    if let Some(ignore) = gitignore {
+        if ignore.matched_path_or_any_parents(path, is_dir).is_ignore() {
+            return true;
+        }
     }
+
+    // Check for nested .gitignore files in parent directories
+    let file_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(name) => name,
+        None => return false,
+    };
+
+    // Walk up the directory tree looking for .gitignore files
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        let gitignore_path = dir.join(".gitignore");
+        if gitignore_path.is_file() {
+            if let Ok(contents) = fs::read_to_string(&gitignore_path) {
+                for line in contents.lines() {
+                    let line = line.trim();
+                    // Skip comments and empty lines
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    // Handle /pattern (anchored to this directory)
+                    let pattern = line.trim_start_matches('/').trim_end_matches('/');
+                    if pattern == file_name {
+                        return true;
+                    }
+                }
+            }
+        }
+        current = dir.parent();
+    }
+
+    false
 }
 
 struct GitCounts {
@@ -1888,4 +1663,139 @@ fn expand_path(
     }
 
     Ok(())
+}
+
+fn parse_ansi_lines(text: &str) -> Vec<StyledLine> {
+    text.lines()
+        .map(|line| StyledLine {
+            spans: parse_ansi_spans(line),
+        })
+        .collect()
+}
+
+fn parse_ansi_spans(line: &str) -> Vec<StyledSpan> {
+    let mut spans = Vec::new();
+    let mut style = TextStyle::default();
+    let mut buf = String::new();
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{001b}' {
+            if let Some('[') = chars.peek().copied() {
+                let _ = chars.next();
+                let mut codes = String::new();
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                    codes.push(c);
+                }
+                if !buf.is_empty() {
+                    spans.push(StyledSpan {
+                        text: buf.clone(),
+                        style: style.clone(),
+                    });
+                    buf.clear();
+                }
+                apply_sgr(&codes, &mut style);
+                continue;
+            }
+        }
+        buf.push(ch);
+    }
+
+    if !buf.is_empty() {
+        spans.push(StyledSpan { text: buf, style });
+    }
+
+    spans
+}
+
+fn apply_sgr(codes: &str, style: &mut TextStyle) {
+    if codes.is_empty() {
+        *style = TextStyle::default();
+        return;
+    }
+
+    let parts = codes.split(';').filter(|p| !p.is_empty());
+    let mut codes_vec = Vec::new();
+    for part in parts {
+        if let Ok(value) = part.parse::<u16>() {
+            codes_vec.push(value);
+        }
+    }
+
+    let mut i = 0;
+    while i < codes_vec.len() {
+        match codes_vec[i] {
+            0 => *style = TextStyle::default(),
+            1 => style.bold = true,
+            2 => style.dim = true,
+            3 => style.italic = true,
+            4 => style.underline = true,
+            22 => {
+                style.bold = false;
+                style.dim = false;
+            }
+            23 => style.italic = false,
+            24 => style.underline = false,
+            39 => style.fg = None,
+            49 => style.bg = None,
+            30..=37 | 90..=97 => style.fg = Some(ansi_color(codes_vec[i])),
+            40..=47 | 100..=107 => style.bg = Some(ansi_color(codes_vec[i] - 10)),
+            38 => {
+                if let Some((color, consumed)) = parse_extended_color(&codes_vec[i + 1..]) {
+                    style.fg = Some(color);
+                    i += consumed;
+                }
+            }
+            48 => {
+                if let Some((color, consumed)) = parse_extended_color(&codes_vec[i + 1..]) {
+                    style.bg = Some(color);
+                    i += consumed;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+fn parse_extended_color(codes: &[u16]) -> Option<(Color, usize)> {
+    match codes.first().copied() {
+        Some(5) => codes.get(1).map(|n| (Color::Indexed(*n as u8), 2)),
+        Some(2) => {
+            if codes.len() >= 4 {
+                Some((
+                    Color::Rgb(codes[1] as u8, codes[2] as u8, codes[3] as u8),
+                    4,
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn ansi_color(code: u16) -> Color {
+    match code {
+        30 => Color::Black,
+        31 => Color::Red,
+        32 => Color::Green,
+        33 => Color::Yellow,
+        34 => Color::Blue,
+        35 => Color::Magenta,
+        36 => Color::Cyan,
+        37 => Color::Gray,
+        90 => Color::DarkGray,
+        91 => Color::LightRed,
+        92 => Color::LightGreen,
+        93 => Color::LightYellow,
+        94 => Color::LightBlue,
+        95 => Color::LightMagenta,
+        96 => Color::LightCyan,
+        97 => Color::White,
+        _ => Color::White,
+    }
 }
