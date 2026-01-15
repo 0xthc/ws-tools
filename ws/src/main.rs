@@ -106,6 +106,48 @@ enum Commands {
         /// AI tool to switch to (shows selector if not provided)
         tool: Option<String>,
     },
+
+    /// Quick switch to a worktree by branch name
+    #[command(alias = "sw")]
+    Switch {
+        /// Branch name to switch to
+        branch: String,
+    },
+
+    /// Clone a repository and set up workspace structure
+    #[command(alias = "c")]
+    Clone {
+        /// Repository URL to clone
+        url: String,
+    },
+
+    /// Create a pull request from current worktree
+    Pr {
+        #[command(subcommand)]
+        action: Option<PrCommands>,
+    },
+
+    /// Review a pull request in a new worktree
+    Review {
+        /// PR number to review
+        number: u32,
+    },
+
+    /// Garbage collect merged branches and their worktrees
+    Gc {
+        /// Force delete without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Update ws and texplore via Homebrew
+    Update,
+}
+
+#[derive(Subcommand)]
+enum PrCommands {
+    /// List PRs for branches with worktrees
+    List,
 }
 
 fn main() -> Result<()> {
@@ -142,6 +184,15 @@ fn main() -> Result<()> {
         Some(Commands::Config { key, value }) => commands::config(key, value),
         Some(Commands::Init) => commands::init(),
         Some(Commands::Ai { tool }) => commands::ai(tool),
+        Some(Commands::Switch { branch }) => commands::switch(&branch),
+        Some(Commands::Clone { url }) => commands::clone_repo(&url),
+        Some(Commands::Pr { action }) => match action {
+            Some(PrCommands::List) => commands::pr_list(),
+            None => commands::pr_create(),
+        },
+        Some(Commands::Review { number }) => commands::review(number),
+        Some(Commands::Gc { force }) => commands::gc(force),
+        Some(Commands::Update) => commands::update(),
         None => {
             // Default to open current directory
             commands::open(None)

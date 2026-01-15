@@ -1,6 +1,6 @@
 [package]
 name = "ws"
-version = "0.2.5"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 description = "Workspace CLI for git worktrees with tmux layouts"
@@ -14,3 +14,4 @@ libc = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
 dirs = "5"
+serde_json = "1"
