@@ -95,7 +95,9 @@ fn main() -> io::Result<()> {
                 }
                 Event::FocusGained => {
                     has_focus = true;
+                    app.refreshing = true;
                     resync(&mut app)?;
+                    app.refreshing = false;
                     last_refresh = Instant::now();
                 }
                 Event::Mouse(mouse) => {
@@ -108,7 +110,9 @@ fn main() -> io::Result<()> {
         }
 
         if last_refresh.elapsed() >= Duration::from_secs(30) {
+            app.refreshing = true;
             resync(&mut app)?;
+            app.refreshing = false;
             last_refresh = Instant::now();
         }
     }
@@ -148,6 +152,7 @@ struct App {
     pending_delete: Option<usize>,
     viewer: Option<Viewer>,
     last_click: Option<(Instant, usize)>,
+    refreshing: bool,
 }
 
 impl App {
@@ -171,6 +176,7 @@ impl App {
             pending_delete: None,
             viewer: None,
             last_click: None,
+            refreshing: false,
         }
     }
 
@@ -652,12 +658,16 @@ fn render(stdout: &mut io::Stdout, app: &mut App) -> io::Result<()> {
         )?;
     }
 
-    let status_with_spinner = format!("{} {}", spinner_frame(), app.status);
+    let status_line = if app.refreshing {
+        format!("{} {}", spinner_frame(), app.status)
+    } else {
+        app.status.clone()
+    };
     queue!(
         stdout,
         MoveTo(0, (view_height + 1) as u16),
         Clear(ClearType::UntilNewLine),
-        Print(clip_to_width(&status_with_spinner, width))
+        Print(clip_to_width(&status_line, width))
     )?;
 
     Ok(())

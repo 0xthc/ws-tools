@@ -19,7 +19,15 @@ ws-tools/
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── main.rs         # CLI entry point, clap command definitions
-│   │   ├── commands.rs     # Command implementations (open, new, list, delete, sync, etc.)
+│   │   ├── commands/       # Command implementations (modular)
+│   │   │   ├── mod.rs      # Re-exports and shared helpers
+│   │   │   ├── workspace.rs    # open, new, list, select, reload, delete, sync
+│   │   │   ├── status.rs       # Status TUI dashboard
+│   │   │   ├── doctor.rs       # Dependencies check/install
+│   │   │   ├── config.rs       # config, init commands
+│   │   │   ├── ai.rs           # AI tool switching with TUI selector
+│   │   │   ├── git_workflow.rs # switch, clone, pr_create, pr_list, review, gc
+│   │   │   └── update.rs       # Update command
 │   │   ├── config.rs       # Configuration: AiTool, GitTool, ExplorerTool enums
 │   │   ├── git.rs          # Git operations (worktrees, branches)
 │   │   ├── tmux.rs         # Tmux session/layout management
@@ -38,7 +46,13 @@ ws-tools/
 
 | Feature | Files | Description |
 |---------|-------|-------------|
-| **Commands** | `main.rs`, `commands.rs` | open, new, list, select, delete, sync, doctor, status, config, init, ai |
+| **Workspace Commands** | `commands/workspace.rs` | open, new, list, select, reload, delete, sync |
+| **Status Dashboard** | `commands/status.rs` | TUI dashboard showing worktrees and sessions |
+| **Doctor** | `commands/doctor.rs` | Dependencies check and install |
+| **Config Commands** | `commands/config.rs` | config, init commands |
+| **AI Switching** | `commands/ai.rs` | AI tool switching with TUI selector |
+| **Git Workflow** | `commands/git_workflow.rs` | switch, clone, pr_create, pr_list, review, gc |
+| **Update** | `commands/update.rs` | Update via Homebrew |
 | **AI Tool Config** | `config.rs` | AiTool enum - droid, claude, codex, gemini, copilot, vibe, opencode |
 | **Git Tool Config** | `config.rs` | GitTool enum - lazygit, gitui, tig, custom |
 | **Explorer Config** | `config.rs` | ExplorerTool enum - texplore, yazi, ranger, lf, nnn, custom |
