@@ -65,6 +65,14 @@ ws config ai_tool claude     # Set AI tool (droid, claude, codex, gemini, copilo
 ws init                      # Re-run setup wizard
 ws ai                        # Switch AI tool in current session (TUI popup)
 ws ai claude                 # Switch to specific AI tool directly
+ws switch feat/auth          # Quick switch to worktree by branch name
+ws clone <url>               # Clone repo and set up workspace structure
+ws pr                        # Create a pull request (opens in browser)
+ws pr list                   # List PRs for branches with worktrees
+ws review 123                # Review PR #123 in a new worktree
+ws gc                        # Clean up merged worktrees and branches
+ws gc --force                # Force cleanup without confirmation
+ws update                    # Update ws and texplore via Homebrew
 ```
 
 ### Aliases
@@ -78,6 +86,8 @@ ws ai claude                 # Switch to specific AI tool directly
 | `delete`| `d`, `rm` |
 | `reload`| `r`     |
 | `ai`    | `a`     |
+| `switch`| `sw`    |
+| `clone` | `c`     |
 
 ## Integrations
 
