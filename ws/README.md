@@ -53,6 +53,8 @@ ws list                      # List all worktrees with session status
 ws select                    # Interactive worktree picker (fzf)
 ws status                    # TUI dashboard of worktrees & sessions
 ws delete feat/auth          # Delete worktree, session, and branch
+ws reload                    # Reload current workspace session
+ws reload feat/auth          # Reload specific worktree session
 ws sync                      # Clean up orphaned sessions
 ws sync --create             # Create sessions for worktrees without one
 ws sync --delete             # Delete worktrees without active sessions
@@ -74,6 +76,7 @@ ws ai claude                 # Switch to specific AI tool directly
 | `list`  | `l`, `ls` |
 | `select`| `s`     |
 | `delete`| `d`, `rm` |
+| `reload`| `r`     |
 | `ai`    | `a`     |
 
 ## Integrations
@@ -88,10 +91,14 @@ bind-key W display-popup -E -w 60% -h 60% "ws select"
 
 # AI tool switcher popup
 bind-key A display-popup -E -w 50% -h 50% "ws ai"
+
+# Reload current workspace session
+bind-key R run-shell "ws reload"
 ```
 
 - `prefix + W` - Open worktree selector popup
 - `prefix + A` - Open AI tool switcher popup
+- `prefix + R` - Reload current workspace session
 
 ### lazygit
 

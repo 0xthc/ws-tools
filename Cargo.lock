@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "texplore"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "chrono",
  "crossterm",
@@ -1375,7 +1375,7 @@ checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "ws"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "clap",

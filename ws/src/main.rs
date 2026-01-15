@@ -60,6 +60,13 @@ enum Commands {
         force: bool,
     },
 
+    /// Reload tmux session for a worktree (recreates with current config)
+    #[command(alias = "r")]
+    Reload {
+        /// Branch name, path, or worktree directory name (defaults to current)
+        target: Option<String>,
+    },
+
     /// Sync tmux sessions with worktrees (clean up orphans)
     Sync {
         /// Create sessions for worktrees that don't have one
@@ -128,6 +135,7 @@ fn main() -> Result<()> {
         Some(Commands::List) => commands::list(),
         Some(Commands::Select { path }) => commands::select(path),
         Some(Commands::Delete { target, force }) => commands::delete(&target, force),
+        Some(Commands::Reload { target }) => commands::reload(target),
         Some(Commands::Sync { create, delete }) => commands::sync(create, delete),
         Some(Commands::Doctor { install }) => commands::doctor(install),
         Some(Commands::Status) => commands::status(),

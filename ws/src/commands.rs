@@ -352,6 +352,44 @@ fn interactive_create() -> Result<()> {
     new(branch, base)
 }
 
+/// Reload tmux session for a worktree (kill and recreate with current config)
+pub fn reload(target: Option<String>) -> Result<()> {
+    let dir = match target {
+        Some(t) => {
+            let path = PathBuf::from(&t);
+            if path.exists() {
+                path
+            } else {
+                let git_root = git::get_root(None).context("Not in a git repository")?;
+                match git::find_worktree(&git_root, &t)? {
+                    Some(wt) => wt.path,
+                    None => anyhow::bail!("Worktree not found: {}", t),
+                }
+            }
+        }
+        None => git::get_root(None).unwrap_or_else(|_| std::env::current_dir().unwrap()),
+    };
+
+    let session = get_session_name(&dir)?;
+
+    // Kill existing session if it exists
+    if tmux::session_exists(&session) {
+        println!("{} Killing session: {}", "::".blue().bold(), session);
+        tmux::kill_session(&session)?;
+    }
+
+    // Warn about missing tools
+    warn_missing_tools()?;
+
+    // Recreate the session with current config
+    let window_title = get_window_title(&dir)?;
+    println!("{} Recreating workspace: {}", "::".blue().bold(), session);
+    tmux::create_session_with_title(&session, &dir, &window_title)?;
+    tmux::attach(&session)?;
+
+    Ok(())
+}
+
 /// Delete worktree, tmux session, and local branch
 pub fn delete(target: &str, force: bool) -> Result<()> {
     let git_root = git::get_root(None).context("Not in a git repository")?;

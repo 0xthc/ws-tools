@@ -3,7 +3,10 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+const SPINNER_RATE_MS: u128 = 50;
 
 use chrono::{DateTime, Local};
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -72,28 +75,20 @@ fn main() -> io::Result<()> {
 
     let mut app = App::new(root_node, gitignore, git_status, root_abs);
     let mut last_refresh = Instant::now();
-    let mut needs_render = true;
     let mut has_focus = true;
     loop {
-        if needs_render {
-            app.refresh_visible();
-            begin_sync_output(&mut stdout)?;
-            render(&mut stdout, &mut app)?;
-            end_sync_output(&mut stdout)?;
-            stdout.flush()?;
-            needs_render = false;
-        }
+        app.refresh_visible();
+        begin_sync_output(&mut stdout)?;
+        render(&mut stdout, &mut app)?;
+        end_sync_output(&mut stdout)?;
+        stdout.flush()?;
 
-        if event::poll(Duration::from_millis(250))? {
+        if event::poll(Duration::from_millis(SPINNER_RATE_MS as u64))? {
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key(&mut app, key)? {
                         break;
                     }
-                    needs_render = true;
-                }
-                Event::Resize(_, _) => {
-                    needs_render = true;
                 }
                 Event::FocusLost => {
                     has_focus = false;
@@ -102,12 +97,10 @@ fn main() -> io::Result<()> {
                     has_focus = true;
                     resync(&mut app)?;
                     last_refresh = Instant::now();
-                    needs_render = true;
                 }
                 Event::Mouse(mouse) => {
                     if has_focus {
                         handle_mouse(&mut app, mouse)?;
-                        needs_render = true;
                     }
                 }
                 _ => {}
@@ -117,7 +110,6 @@ fn main() -> io::Result<()> {
         if last_refresh.elapsed() >= Duration::from_secs(30) {
             resync(&mut app)?;
             last_refresh = Instant::now();
-            needs_render = true;
         }
     }
 
@@ -660,11 +652,12 @@ fn render(stdout: &mut io::Stdout, app: &mut App) -> io::Result<()> {
         )?;
     }
 
+    let status_with_spinner = format!("{} {}", spinner_frame(), app.status);
     queue!(
         stdout,
         MoveTo(0, (view_height + 1) as u16),
         Clear(ClearType::UntilNewLine),
-        Print(clip_to_width(&app.status, width))
+        Print(clip_to_width(&status_with_spinner, width))
     )?;
 
     Ok(())
@@ -1102,6 +1095,15 @@ fn clip_to_width(text: &str, width: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+fn spinner_frame() -> &'static str {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let index = (millis / SPINNER_RATE_MS) as usize % SPINNER_FRAMES.len();
+    SPINNER_FRAMES[index]
 }
 
 fn collect_visible(
