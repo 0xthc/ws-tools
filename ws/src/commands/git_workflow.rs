@@ -309,7 +309,12 @@ pub fn gc(force: bool) -> Result<()> {
     let merged_output = String::from_utf8_lossy(&output.stdout);
     let merged_branches: std::collections::HashSet<String> = merged_output
         .lines()
-        .map(|l| l.trim().trim_start_matches("* ").to_string())
+        .map(|l| {
+            l.trim()
+                .trim_start_matches("* ")
+                .trim_start_matches("+ ")
+                .to_string()
+        })
         .filter(|b| !b.is_empty() && b != &default_branch && !b.starts_with("remotes/"))
         .collect();
 
