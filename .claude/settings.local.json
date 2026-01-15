@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:lib.rs)",
+      "Bash(cargo build:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "WebFetch(domain:opencode.ai)",
+      "WebFetch(domain:numman-ali.github.io)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:aisdk.rs)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:crates.io)",
+      "mcp__context7__resolve-library-id"
+    ]
+  }
+}
