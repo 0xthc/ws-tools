@@ -143,7 +143,7 @@ fn create_large_layout(
     send_keys(
         session,
         "0.4",
-        "tsql postgres://postgres:123@localhost:5432/basalt",
+        "tsqlx postgres://postgres:123@localhost:5432/basalt",
     )?;
 
     select_pane(session, "0.2")?;
