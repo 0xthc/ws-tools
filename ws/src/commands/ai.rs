@@ -107,8 +107,8 @@ pub fn ai(tool_name: Option<String>) -> Result<()> {
     // Kill any running process in the pane properly
     kill_pane_processes(&target)?;
 
-    // Small delay to let the process exit and shell reset
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Allow time for graceful shutdown hooks before starting the new CLI
+    std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Clear terminal and command line, then start new tool
     Command::new("tmux")

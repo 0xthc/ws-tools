@@ -1,0 +1,79 @@
+#!/bin/zsh
+
+# Parse arguments
+FORCE_EXPAND=false
+FORCE_SHRINK=false
+for arg in "$@"; do
+  case "$arg" in
+    --expand) FORCE_EXPAND=true ;;
+    --shrink) FORCE_SHRINK=true ;;
+  esac
+done
+
+# Get current session (this script runs from within tmux)
+SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+if [[ -z "$SESSION" ]]; then
+  exit 0  # Not in tmux, silently exit
+fi
+
+# Get working directory from pane 0
+DIR=$(tmux display-message -t "$SESSION":0.0 -p '#{pane_current_path}' 2>/dev/null)
+DIR="${DIR:-$(pwd)}"
+
+# Detect current display (skip if forcing)
+LARGE_DISPLAY=false
+if [[ "$FORCE_EXPAND" == "true" ]]; then
+  LARGE_DISPLAY=true
+elif [[ "$FORCE_SHRINK" == "true" ]]; then
+  LARGE_DISPLAY=false
+else
+  WIN_POS=$(osascript -e 'tell application "System Events" to tell process "Ghostty" to get position of window 1' 2>/dev/null)
+  WIN_Y=$(echo "$WIN_POS" | cut -d',' -f2 | tr -d ' ')
+  if [[ -n "$WIN_Y" && "$WIN_Y" -lt 0 ]]; then
+    LARGE_DISPLAY=true
+  fi
+fi
+
+# Count current panes
+PANE_COUNT=$(tmux list-panes -t "$SESSION" | wc -l | tr -d ' ')
+
+# Ghostty env vars
+GHOSTTY_ENV="-e TERM_PROGRAM=ghostty \
+  -e TERM_PROGRAM_VERSION=$TERM_PROGRAM_VERSION \
+  -e GHOSTTY_RESOURCES_DIR=$GHOSTTY_RESOURCES_DIR \
+  -e GHOSTTY_BIN_DIR=$GHOSTTY_BIN_DIR \
+  -e GHOSTTY_SHELL_FEATURES=$GHOSTTY_SHELL_FEATURES \
+  -e __CFBundleIdentifier=com.mitchellh.ghostty \
+  -e COLORTERM=truecolor"
+
+if [[ "$LARGE_DISPLAY" == "true" && "$PANE_COUNT" -eq 3 ]]; then
+  # Expand to 3 columns with golden ratio: 23% | 54% | 23%
+  # Current layout is: pane0 (top-left) | pane2 (center/droid)
+  #                    pane1 (bot-left) |
+  # Add right column by splitting pane2, then resize all
+  
+  eval tmux split-window -h -t "$SESSION":0.2 -c "$DIR" $GHOSTTY_ENV
+  eval tmux split-window -v -t "$SESSION":0.3 -c "$DIR" $GHOSTTY_ENV
+  
+  # Resize to golden ratio: 23% | 54% | 23%
+  # Left column (panes 0,1) = 23%
+  tmux resize-pane -t "$SESSION":0.0 -x 23%
+  # Right column (panes 3,4) = 23% (from right edge)
+  tmux resize-pane -t "$SESSION":0.3 -x 23%
+  
+  # Start default commands in new panes
+  tmux send-keys -t "$SESSION":0.3 "ls -la" C-m
+  tmux send-keys -t "$SESSION":0.4 "tsqlx <connection>" C-m
+  
+  tmux select-pane -t "$SESSION":0.2
+
+elif [[ "$LARGE_DISPLAY" == "false" && "$PANE_COUNT" -eq 5 ]]; then
+  # Shrink to 2 columns: kill panes 3 and 4 (rightmost column)
+  tmux kill-pane -t "$SESSION":0.4
+  tmux kill-pane -t "$SESSION":0.3
+  
+  # Rebalance to golden ratio (38% | 62%)
+  tmux resize-pane -t "$SESSION":0.2 -x 62%
+  
+  tmux select-pane -t "$SESSION":0.2
+fi
