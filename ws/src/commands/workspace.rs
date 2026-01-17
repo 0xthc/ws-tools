@@ -5,7 +5,7 @@ use crate::tmux;
 use anyhow::{Context, Result};
 use colored::*;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Warn if configured panel tools are not installed
@@ -295,7 +295,19 @@ pub fn reload(target: Option<String>) -> Result<()> {
                 let git_root = git::get_root(None).context("Not in a git repository")?;
                 match git::find_worktree(&git_root, &t)? {
                     Some(wt) => wt.path,
-                    None => anyhow::bail!("Worktree not found: {}", t),
+                    None => {
+                        // Worktree not found, ask if user wants to create it
+                        print!("Worktree '{}' not found. Create it? [y/N]: ", t);
+                        io::stdout().flush()?;
+                        let mut input = String::new();
+                        io::stdin().lock().read_line(&mut input)?;
+                        if input.trim().eq_ignore_ascii_case("y") {
+                            let base = git::get_default_branch(Some(&git_root));
+                            return new(&t, &base);
+                        } else {
+                            anyhow::bail!("Worktree not found: {}", t);
+                        }
+                    }
                 }
             }
         }
@@ -324,7 +336,14 @@ pub fn reload(target: Option<String>) -> Result<()> {
 
 /// Delete worktree, tmux session, and local branch
 pub fn delete(target: &str, force: bool) -> Result<()> {
-    let git_root = git::get_root(None).context("Not in a git repository")?;
+    let target_path = Path::new(target);
+
+    // Get the main worktree root (original repo), not the linked worktree's root
+    let git_root = if target_path.is_absolute() || target_path.exists() {
+        git::get_main_worktree_root(Some(target_path)).context("Not in a git repository")?
+    } else {
+        git::get_main_worktree_root(None).context("Not in a git repository")?
+    };
 
     // Find the worktree
     let worktree = git::find_worktree(&git_root, target)?

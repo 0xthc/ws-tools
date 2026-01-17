@@ -82,6 +82,47 @@ pub fn get_root(path: Option<&Path>) -> Result<PathBuf> {
     Ok(PathBuf::from(root.trim()))
 }
 
+/// Get the main worktree root (the original repo, not a linked worktree)
+pub fn get_main_worktree_root(path: Option<&Path>) -> Result<PathBuf> {
+    let mut cmd = Command::new("git");
+    if let Some(p) = path {
+        cmd.current_dir(p);
+    }
+    cmd.args(["rev-parse", "--git-common-dir"]);
+
+    let output = cmd.output().context("Failed to run git")?;
+
+    if !output.status.success() {
+        anyhow::bail!("Not in a git repository");
+    }
+
+    let git_common_dir = String::from_utf8(output.stdout)?.trim().to_string();
+    let git_common_path = PathBuf::from(&git_common_dir);
+
+    // If it ends with .git, get the parent directory
+    if git_common_path.ends_with(".git") {
+        if let Some(parent) = git_common_path.parent() {
+            return Ok(parent.to_path_buf());
+        }
+    }
+
+    // Otherwise it might be a bare repo or relative path
+    if git_common_dir == ".git" {
+        // We're in the main worktree, use show-toplevel
+        return get_root(path);
+    }
+
+    // For absolute paths ending in .git
+    if git_common_path.is_absolute() {
+        if let Some(parent) = git_common_path.parent() {
+            return Ok(parent.to_path_buf());
+        }
+    }
+
+    // Fallback to regular root
+    get_root(path)
+}
+
 /// Get the current branch name for a directory
 pub fn get_branch(path: &Path) -> Result<String> {
     let output = Command::new("git")
@@ -267,6 +308,25 @@ pub fn find_worktree(git_root: &Path, target: &str) -> Result<Option<Worktree>> 
     let target_path = PathBuf::from(target);
     if let Some(wt) = worktrees.iter().find(|wt| wt.path == target_path) {
         return Ok(Some(wt.clone()));
+    }
+
+    if target_path.is_absolute() || target_path.exists() {
+        let target_canon = if target_path.exists() {
+            std::fs::canonicalize(&target_path).unwrap_or_else(|_| target_path.clone())
+        } else {
+            target_path.clone()
+        };
+
+        if let Some(wt) = worktrees.iter().find(|wt| {
+            let wt_path = if wt.path.exists() {
+                std::fs::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone())
+            } else {
+                wt.path.clone()
+            };
+            target_canon.starts_with(&wt_path)
+        }) {
+            return Ok(Some(wt.clone()));
+        }
     }
 
     // Try to match by directory name
