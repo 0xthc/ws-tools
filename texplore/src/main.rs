@@ -160,7 +160,7 @@ impl App {
             focus: 0,
             scroll: 0,
             status: String::from(
-                "q: quit  j/k: move  h/l/Enter: collapse/expand  d: delete  o: open  C: copy path",
+                "q: quit  j/k: move  h/l/Enter: collapse/expand  d: delete  o: open  N: nvim  C: copy",
             ),
             pending_delete: None,
             viewer: None,
@@ -281,6 +281,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Char('o') => open_with_bat(app)?,
         KeyCode::Char('y') => confirm_delete(app)?,
         KeyCode::Char('C') => copy_path_to_clipboard(app)?,
+        KeyCode::Char('N') => open_in_nvim_popup(app)?,
         KeyCode::Enter => toggle_or_open(app)?,
         KeyCode::Esc => cancel_delete(app),
         _ => {}
@@ -488,6 +489,53 @@ fn copy_path_to_clipboard(app: &mut App) -> io::Result<()> {
         }
         _ => {
             app.status = String::from("failed to copy to clipboard");
+        }
+    }
+
+    Ok(())
+}
+
+fn open_in_nvim_popup(app: &mut App) -> io::Result<()> {
+    let entry = match app.visible.get(app.focus) {
+        Some(entry) => entry.clone(),
+        None => return Ok(()),
+    };
+
+    if entry.path.is_dir() {
+        app.status = String::from("cannot open a directory in nvim");
+        return Ok(());
+    }
+
+    // Check if we're inside tmux
+    if std::env::var("TMUX").is_err() {
+        app.status = String::from("nvim popup requires tmux");
+        return Ok(());
+    }
+
+    let path_str = entry.path.display().to_string();
+
+    // Open nvim in a tmux popup with double-Esc to quit
+    let result = std::process::Command::new("tmux")
+        .args([
+            "display-popup",
+            "-E",
+            "-w",
+            "80%",
+            "-h",
+            "80%",
+            &format!("nvim -c 'nnoremap <Esc><Esc> :q!<CR>' '{}'", path_str),
+        ])
+        .status();
+
+    match result {
+        Ok(status) if status.success() => {
+            app.status = format!(
+                "opened: {}",
+                entry.path.file_name().unwrap_or_default().to_string_lossy()
+            );
+        }
+        _ => {
+            app.status = String::from("failed to open nvim popup");
         }
     }
 
