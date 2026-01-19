@@ -83,10 +83,17 @@ impl ReactionDiffusion {
         let mut new_v = self.v.clone();
 
         // Oscillating parameters for pulsing effect
-        self.time += 0.05;
+        self.time += 0.08;
         let pulse = (self.time.sin() * 0.5 + 0.5) * 0.01;
         let f = self.f + pulse;
         let k = self.k - pulse * 0.5;
+
+        // Pacemaker: continuously inject chemical at center with oscillating radius
+        let cx = self.width / 2;
+        let cy = self.height / 2;
+        let base_radius = (self.width.min(self.height) / 8) as f64;
+        let breath = (self.time * 0.5).sin() * 0.4 + 0.6; // Oscillates 0.2 to 1.0
+        let current_radius = base_radius * breath;
 
         for y in 0..self.height {
             for x in 0..self.width {
@@ -100,6 +107,17 @@ impl ReactionDiffusion {
                 // Gray-Scott reaction-diffusion equations
                 new_u[y][x] = u + self.du * lap_u - uvv + f * (1.0 - u);
                 new_v[y][x] = v + self.dv * lap_v + uvv - (f + k) * v;
+
+                // Pacemaker injection at center - keeps the bubble alive and pulsing
+                let dx = x as f64 - cx as f64;
+                let dy = (y as f64 - cy as f64) * 2.0; // Aspect ratio correction
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < current_radius {
+                    // Inject V chemical, reduce U - creates the active pattern
+                    let strength = 1.0 - (dist / current_radius);
+                    new_u[y][x] = (new_u[y][x] - 0.1 * strength).max(0.0);
+                    new_v[y][x] = (new_v[y][x] + 0.1 * strength).min(1.0);
+                }
 
                 // Clamp values
                 new_u[y][x] = new_u[y][x].clamp(0.0, 1.0);
