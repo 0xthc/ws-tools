@@ -194,10 +194,12 @@ fn main() -> Result<()> {
         Some(Commands::Gc { force }) => commands::gc(force),
         Some(Commands::Update) => commands::update(),
         None => {
-            // Check if config exists - if so, show dashboard; otherwise show onboarding
+            // Check if config exists AND we're in a git repo - if so, show dashboard
             let config_path = crate::config::Config::path()?;
-            if config_path.exists() {
-                // Config exists - show dashboard with session picker
+            let in_git_repo = git::get_root(None).is_ok();
+            
+            if config_path.exists() && in_git_repo {
+                // Config exists and in git repo - show dashboard with session picker
                 match onboarding::run_dashboard()? {
                     onboarding::DashboardResult::OpenSession(path) => {
                         commands::open(Some(path))
@@ -205,7 +207,7 @@ fn main() -> Result<()> {
                     onboarding::DashboardResult::Quit => Ok(()),
                 }
             } else {
-                // No config - run onboarding
+                // No config or not in git repo - run onboarding
                 if let Some(result) = onboarding::run_onboarding()? {
                     let config = crate::config::Config {
                         ai_tool: result.ai_tool,

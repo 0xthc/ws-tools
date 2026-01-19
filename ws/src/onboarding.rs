@@ -12,46 +12,175 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use std::io::stdout;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// Workspace metrics used to create unique plasma patterns
+#[derive(Clone)]
+pub struct WorkspaceMetrics {
+    pub repo_name: String,
+    pub num_worktrees: usize,
+    pub num_commits: usize,
+    pub num_branches: usize,
+    pub active_sessions: usize,
+}
+
+impl Default for WorkspaceMetrics {
+    fn default() -> Self {
+        Self {
+            repo_name: "default".to_string(),
+            num_worktrees: 1,
+            num_commits: 100,
+            num_branches: 1,
+            active_sessions: 1,
+        }
+    }
+}
+
+impl WorkspaceMetrics {
+    /// Create metrics from current git repository
+    pub fn from_current_repo() -> Self {
+        let mut metrics = Self::default();
+
+        // Get repo name
+        if let Ok(root) = git::get_root(None) {
+            if let Some(name) = root.file_name() {
+                metrics.repo_name = name.to_string_lossy().to_string();
+            }
+
+            // Get worktrees
+            if let Ok(worktrees) = git::list_worktrees(&root) {
+                metrics.num_worktrees = worktrees.len();
+            }
+
+            // Get commit count (approximate, last 1000)
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["rev-list", "--count", "HEAD"])
+                .current_dir(&root)
+                .output()
+            {
+                if output.status.success() {
+                    if let Ok(count) = String::from_utf8_lossy(&output.stdout).trim().parse() {
+                        metrics.num_commits = count;
+                    }
+                }
+            }
+
+            // Get branch count
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["branch", "-a", "--list"])
+                .current_dir(&root)
+                .output()
+            {
+                if output.status.success() {
+                    metrics.num_branches = String::from_utf8_lossy(&output.stdout).lines().count();
+                }
+            }
+        }
+
+        // Get active tmux sessions for this repo
+        let sessions = tmux::get_active_sessions();
+        metrics.active_sessions = sessions
+            .iter()
+            .filter(|s| s.starts_with(&format!("{}-", metrics.repo_name)))
+            .count()
+            .max(1);
+
+        metrics
+    }
+
+    /// Generate a hash from repo name for consistent randomization
+    fn name_hash(&self) -> u64 {
+        self.repo_name
+            .bytes()
+            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
+    }
+}
+
 /// Reaction-diffusion simulation for organic plasma animation
 /// Based on Gray-Scott model - simulates two chemicals that create natural patterns
+/// Parameters are derived from workspace metrics to create unique patterns per repo
 struct ReactionDiffusion {
     width: usize,
     height: usize,
     u: Vec<Vec<f64>>, // Chemical U concentration
     v: Vec<Vec<f64>>, // Chemical V concentration
-    // Parameters tuned for pulsing blob pattern
-    du: f64,   // Diffusion rate of U
-    dv: f64,   // Diffusion rate of V
-    f: f64,    // Feed rate
-    k: f64,    // Kill rate
-    time: f64, // For oscillation
+    // Parameters derived from workspace metrics
+    du: f64,          // Diffusion rate of U
+    dv: f64,          // Diffusion rate of V
+    f: f64,           // Feed rate
+    k: f64,           // Kill rate
+    time: f64,        // For oscillation
+    pulse_speed: f64, // How fast the pattern pulses
+    num_seeds: usize, // Number of seed points (nucleation centers)
+    seed_positions: Vec<(usize, usize)>, // Positions of seed points
+    metrics: WorkspaceMetrics,
 }
 
 impl ReactionDiffusion {
     fn new(width: usize, height: usize) -> Self {
+        Self::with_metrics(width, height, WorkspaceMetrics::default())
+    }
+
+    fn with_metrics(width: usize, height: usize, metrics: WorkspaceMetrics) -> Self {
+        let hash = metrics.name_hash();
+
+        // Derive parameters from metrics
+        // Feed rate: 0.030-0.050 based on repo name hash
+        let f = 0.030 + ((hash % 20) as f64) * 0.001;
+        // Kill rate: 0.057-0.072 based on hash
+        let k = 0.057 + (((hash >> 8) % 15) as f64) * 0.001;
+        // Diffusion rates slightly varied
+        let du = 0.14 + ((hash >> 16) % 5) as f64 * 0.01;
+        let dv = 0.06 + ((hash >> 24) % 4) as f64 * 0.01;
+
+        // Pulse speed based on commit activity (more commits = faster pulse)
+        let pulse_speed = 0.06 + (metrics.num_commits.min(1000) as f64 / 1000.0) * 0.04;
+
+        // Number of seed points based on active sessions (1-5)
+        let num_seeds = metrics.active_sessions.clamp(1, 5);
+
+        // Generate seed positions based on hash and number of seeds
+        let mut seed_positions = Vec::new();
+        let cx = width / 2;
+        let cy = height / 2;
+
+        if num_seeds == 1 {
+            // Single center seed
+            seed_positions.push((cx, cy));
+        } else {
+            // Distribute seeds in a pattern based on hash
+            let angle_offset = ((hash >> 32) % 360) as f64 * std::f64::consts::PI / 180.0;
+            let radius = (width.min(height) / 4) as f64;
+
+            for i in 0..num_seeds {
+                let angle = angle_offset + (i as f64 * 2.0 * std::f64::consts::PI / num_seeds as f64);
+                let sx = (cx as f64 + angle.cos() * radius * 0.5) as usize;
+                let sy = (cy as f64 + angle.sin() * radius * 0.25) as usize; // Aspect ratio
+                seed_positions.push((sx.clamp(1, width - 2), sy.clamp(1, height - 2)));
+            }
+        }
+
+        // Initialize grids
         let mut u = vec![vec![1.0; width]; height];
         let mut v = vec![vec![0.0; width]; height];
 
-        // Seed the center with chemical V to start the reaction
-        let cx = width / 2;
-        let cy = height / 2;
-        let radius = (width.min(height) / 6) as i32;
-
-        for y in 0..height {
-            for x in 0..width {
-                let dx = x as i32 - cx as i32;
-                let dy = (y as i32 - cy as i32) * 2; // Stretch vertically for terminal aspect ratio
-                let dist = ((dx * dx + dy * dy) as f64).sqrt();
-                if dist < radius as f64 {
-                    u[y][x] = 0.5;
-                    v[y][x] = 0.25;
+        // Seed initial pattern at each seed position
+        let seed_radius = (width.min(height) / (8 + num_seeds * 2)) as i32;
+        for &(sx, sy) in &seed_positions {
+            for y in 0..height {
+                for x in 0..width {
+                    let dx = x as i32 - sx as i32;
+                    let dy = (y as i32 - sy as i32) * 2;
+                    let dist = ((dx * dx + dy * dy) as f64).sqrt();
+                    if dist < seed_radius as f64 {
+                        u[y][x] = 0.5;
+                        v[y][x] = 0.25;
+                    }
                 }
             }
         }
@@ -61,11 +190,21 @@ impl ReactionDiffusion {
             height,
             u,
             v,
-            du: 0.16,  // Diffusion rate U
-            dv: 0.08,  // Diffusion rate V
-            f: 0.035,  // Feed rate - controls pattern type
-            k: 0.065,  // Kill rate - controls pattern density
+            du,
+            dv,
+            f,
+            k,
             time: 0.0,
+            pulse_speed,
+            num_seeds,
+            seed_positions,
+            metrics,
+        }
+    }
+
+    fn resize_with_metrics(&mut self, width: usize, height: usize) {
+        if self.width != width || self.height != height {
+            *self = Self::with_metrics(width, height, self.metrics.clone());
         }
     }
 
@@ -84,16 +223,14 @@ impl ReactionDiffusion {
         let mut new_v = self.v.clone();
 
         // Oscillating parameters for pulsing effect
-        self.time += 0.08;
+        self.time += self.pulse_speed;
         let pulse = (self.time.sin() * 0.5 + 0.5) * 0.01;
         let f = self.f + pulse;
         let k = self.k - pulse * 0.5;
 
-        // Pacemaker: continuously inject chemical at center with oscillating radius
-        let cx = self.width / 2;
-        let cy = self.height / 2;
-        let base_radius = (self.width.min(self.height) / 8) as f64;
-        let breath = (self.time * 0.5).sin() * 0.4 + 0.6; // Oscillates 0.2 to 1.0
+        // Pacemaker parameters
+        let base_radius = (self.width.min(self.height) / (8 + self.num_seeds)) as f64;
+        let breath = (self.time * 0.5).sin() * 0.4 + 0.6;
         let current_radius = base_radius * breath;
 
         for y in 0..self.height {
@@ -109,15 +246,16 @@ impl ReactionDiffusion {
                 new_u[y][x] = u + self.du * lap_u - uvv + f * (1.0 - u);
                 new_v[y][x] = v + self.dv * lap_v + uvv - (f + k) * v;
 
-                // Pacemaker injection at center - keeps the bubble alive and pulsing
-                let dx = x as f64 - cx as f64;
-                let dy = (y as f64 - cy as f64) * 2.0; // Aspect ratio correction
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist < current_radius {
-                    // Inject V chemical, reduce U - creates the active pattern
-                    let strength = 1.0 - (dist / current_radius);
-                    new_u[y][x] = (new_u[y][x] - 0.1 * strength).max(0.0);
-                    new_v[y][x] = (new_v[y][x] + 0.1 * strength).min(1.0);
+                // Pacemaker injection at each seed point
+                for &(sx, sy) in &self.seed_positions {
+                    let dx = x as f64 - sx as f64;
+                    let dy = (y as f64 - sy as f64) * 2.0;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist < current_radius {
+                        let strength = 1.0 - (dist / current_radius);
+                        new_u[y][x] = (new_u[y][x] - 0.1 * strength).max(0.0);
+                        new_v[y][x] = (new_v[y][x] + 0.1 * strength).min(1.0);
+                    }
                 }
 
                 // Clamp values
@@ -153,10 +291,10 @@ impl ReactionDiffusion {
 #[derive(PartialEq, Clone)]
 #[allow(clippy::enum_variant_names)]
 enum Screen {
+    SelectPath,     // First screen when not in git repo
     SelectAiTool,
     SelectGitTool,
     SelectExplorer,
-    SelectPath,
 }
 
 /// Onboarding application state
@@ -205,6 +343,13 @@ impl OnboardingApp {
         // Initialize plasma simulation - size will be adjusted on first render
         let plasma = ReactionDiffusion::new(80, 40);
 
+        // Start with path selection if not in git repo, otherwise AI tool selection
+        let initial_screen = if in_git_repo {
+            Screen::SelectAiTool
+        } else {
+            Screen::SelectPath
+        };
+
         Self {
             ai_tools: AiTool::all().to_vec(),
             ai_list_state,
@@ -218,7 +363,7 @@ impl OnboardingApp {
             plasma,
             last_frame_time: Instant::now(),
             should_exit: false,
-            screen: Screen::SelectAiTool,
+            screen: initial_screen,
             path_input: default_path.clone(),
             cursor_position: default_path.len(),
             selected_path: None,
@@ -228,19 +373,19 @@ impl OnboardingApp {
 
     fn current_list_len(&self) -> usize {
         match self.screen {
+            Screen::SelectPath => 0,
             Screen::SelectAiTool => self.ai_tools.len(),
             Screen::SelectGitTool => self.git_tools.len(),
             Screen::SelectExplorer => self.explorer_tools.len(),
-            Screen::SelectPath => 0,
         }
     }
 
     fn current_list_state(&mut self) -> &mut ListState {
         match self.screen {
+            Screen::SelectPath => &mut self.ai_list_state, // unused
             Screen::SelectAiTool => &mut self.ai_list_state,
             Screen::SelectGitTool => &mut self.git_list_state,
             Screen::SelectExplorer => &mut self.explorer_list_state,
-            Screen::SelectPath => &mut self.ai_list_state, // unused
         }
     }
 
@@ -284,6 +429,7 @@ impl OnboardingApp {
 
     fn select_current(&mut self) {
         match self.screen {
+            Screen::SelectPath => {} // Handled by confirm_path
             Screen::SelectAiTool => {
                 if let Some(i) = self.ai_list_state.selected() {
                     self.selected_ai_tool = Some(self.ai_tools[i]);
@@ -299,20 +445,23 @@ impl OnboardingApp {
             Screen::SelectExplorer => {
                 if let Some(i) = self.explorer_list_state.selected() {
                     self.selected_explorer_tool = Some(self.explorer_tools[i].clone());
-                    if !self.in_git_repo {
-                        self.screen = Screen::SelectPath;
-                    } else {
-                        self.should_exit = true;
-                    }
+                    self.should_exit = true;
                 }
             }
-            Screen::SelectPath => {}
         }
     }
 
     fn go_back(&mut self) {
         match self.screen {
-            Screen::SelectAiTool => self.should_exit = true,
+            Screen::SelectPath => self.should_exit = true,
+            Screen::SelectAiTool => {
+                if self.in_git_repo {
+                    self.should_exit = true;
+                } else {
+                    self.screen = Screen::SelectPath;
+                    self.selected_path = None;
+                }
+            }
             Screen::SelectGitTool => {
                 self.screen = Screen::SelectAiTool;
                 self.selected_ai_tool = None;
@@ -321,10 +470,6 @@ impl OnboardingApp {
                 self.screen = Screen::SelectGitTool;
                 self.selected_git_tool = None;
             }
-            Screen::SelectPath => {
-                self.screen = Screen::SelectExplorer;
-                self.selected_explorer_tool = None;
-            }
         }
     }
 
@@ -332,7 +477,8 @@ impl OnboardingApp {
         let path = PathBuf::from(&self.path_input);
         if path.exists() && path.is_dir() {
             self.selected_path = Some(path);
-            self.should_exit = true;
+            // After selecting path, go to AI tool selection
+            self.screen = Screen::SelectAiTool;
         }
     }
 
@@ -569,8 +715,8 @@ fn draw_ui(frame: &mut Frame, app: &mut OnboardingApp) {
             )
         }
         Screen::SelectPath => {
-            // Path selection is handled separately
-            draw_path_modal(frame, app);
+            // Path selection - draw full screen version
+            draw_path_screen(frame, app, main_layout[1]);
             return;
         }
     };
@@ -614,51 +760,60 @@ fn draw_ui(frame: &mut Frame, app: &mut OnboardingApp) {
     frame.render_widget(footer, content_layout[6]);
 }
 
-fn draw_path_modal(frame: &mut Frame, app: &OnboardingApp) {
-    let area = frame.area();
-
-    // Calculate centered modal area (60% width, 9 lines height)
-    let modal_width = (area.width as f32 * 0.6) as u16;
-    let modal_height = 9;
-    let modal_x = (area.width - modal_width) / 2;
-    let modal_y = (area.height - modal_height) / 2;
-
-    let modal_area = Rect {
-        x: modal_x,
-        y: modal_y,
-        width: modal_width,
-        height: modal_height,
-    };
-
-    // Clear the area behind the modal
-    frame.render_widget(Clear, modal_area);
-
-    // Modal block
-    let modal_block = Block::default()
+/// Draw full-screen path selection (when not in git repo)
+fn draw_path_screen(frame: &mut Frame, app: &OnboardingApp, area: Rect) {
+    // Right side block
+    let right_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(" Select Workspace Folder ")
-        .style(Style::default().bg(Color::Black));
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Setup ");
 
-    let inner_area = modal_block.inner(modal_area);
-    frame.render_widget(modal_block, modal_area);
+    let inner_area = right_block.inner(area);
+    frame.render_widget(right_block, area);
 
-    // Modal content layout
-    let modal_layout = Layout::vertical([
-        Constraint::Length(2), // Message
+    // Content layout
+    let content_layout = Layout::vertical([
+        Constraint::Length(2), // Title spacing
+        Constraint::Length(2), // Welcome message
+        Constraint::Length(1), // Subtitle
+        Constraint::Length(2), // Spacing
+        Constraint::Length(2), // Instructions
         Constraint::Length(1), // Spacing
         Constraint::Length(3), // Input field
-        Constraint::Length(1), // Footer
+        Constraint::Length(1), // Status
+        Constraint::Min(1),    // Spacer
+        Constraint::Length(2), // Footer
     ])
     .split(inner_area);
 
-    // Message
-    let message = Paragraph::new(Line::from(Span::styled(
-        "Not in a git repository. Enter a path to open:",
+    // Welcome message
+    let welcome = Paragraph::new(Line::from(vec![
+        Span::styled("Welcome to ", Style::default().fg(Color::White)),
+        Span::styled(
+            "ws",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .alignment(Alignment::Center);
+    frame.render_widget(welcome, content_layout[1]);
+
+    // Subtitle
+    let subtitle = Paragraph::new(Line::from(Span::styled(
+        "Workspace CLI for git worktrees with tmux",
+        Style::default().fg(Color::DarkGray),
+    )))
+    .alignment(Alignment::Center);
+    frame.render_widget(subtitle, content_layout[2]);
+
+    // Instructions
+    let instructions = Paragraph::new(Line::from(Span::styled(
+        "Enter a path to a git repository:",
         Style::default().fg(Color::Yellow),
     )))
     .alignment(Alignment::Center);
-    frame.render_widget(message, modal_layout[0]);
+    frame.render_widget(instructions, content_layout[4]);
 
     // Path input with cursor
     let path_display = if app.cursor_position < app.path_input.len() {
@@ -693,29 +848,39 @@ fn draw_path_modal(frame: &mut Frame, app: &OnboardingApp) {
             .border_style(Style::default().fg(Color::DarkGray))
             .title(" Path "),
     );
-    frame.render_widget(input, modal_layout[2]);
+    frame.render_widget(input, content_layout[6]);
 
     // Validate path and show status
     let path = PathBuf::from(&app.path_input);
     let (status_text, status_color) = if path.exists() && path.is_dir() {
-        ("Valid directory", Color::Green)
+        // Check if it's a git repo
+        if path.join(".git").exists() {
+            ("Valid git repository", Color::Green)
+        } else {
+            ("Directory exists (not a git repo)", Color::Yellow)
+        }
     } else if path.exists() {
         ("Not a directory", Color::Red)
     } else {
         ("Path does not exist", Color::Red)
     };
 
-    // Footer with status and keybindings
+    let status = Paragraph::new(Line::from(Span::styled(
+        status_text,
+        Style::default().fg(status_color),
+    )))
+    .alignment(Alignment::Center);
+    frame.render_widget(status, content_layout[7]);
+
+    // Footer with keybindings
     let footer = Paragraph::new(Line::from(vec![
-        Span::styled(status_text, Style::default().fg(status_color)),
-        Span::raw("  "),
         Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::raw(" confirm  "),
+        Span::raw(" continue  "),
         Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::raw(" back"),
+        Span::raw(" quit"),
     ]))
     .alignment(Alignment::Center);
-    frame.render_widget(footer, modal_layout[3]);
+    frame.render_widget(footer, content_layout[9]);
 }
 
 /// Onboarding result
@@ -888,7 +1053,9 @@ impl DashboardApp {
             list_state.select(Some(0));
         }
 
-        let plasma = ReactionDiffusion::new(80, 40);
+        // Create workspace metrics for unique plasma pattern
+        let metrics = WorkspaceMetrics::from_current_repo();
+        let plasma = ReactionDiffusion::with_metrics(80, 40, metrics.clone());
 
         Ok(Self {
             sessions,
@@ -911,9 +1078,7 @@ impl DashboardApp {
     }
 
     fn resize_plasma(&mut self, width: usize, height: usize) {
-        if self.plasma.width != width || self.plasma.height != height {
-            self.plasma = ReactionDiffusion::new(width, height);
-        }
+        self.plasma.resize_with_metrics(width, height);
     }
 
     fn next_item(&mut self) {
