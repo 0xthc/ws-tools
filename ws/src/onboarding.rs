@@ -18,71 +18,117 @@ use std::io::stdout;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// ASCII art frames for animation
-const ASCII_FRAMES: &[&str] = &[
-    r#"
-       . : : : : : : .
-    . : : : : : : : : : .
-  . : : : : : : : : : : : : .
-  . : | | - - - - - - - - - | : .
-. : | - - = = = = = = = = - - | : .
-. | - - = = = = = = = = = = - - | .
-. | - = = = = + + + + + + + + = = - | .
-. | | - = = = = + + + + + + + + + = = - | | .
-. | | - - = = = = + + + + + + + + + = = = - - | | .
-  . | | - - = = = = + + + + + + + + + + + + = = = - - | | .
-  . | | - - - = = = = = = = + + + + + + + + + = = = - - | | .
-    . | | - - - - = = = = = = = = = + + + + + + = = - - | | .
-    . : | | - - - - - - = = = = = = = = + + + + = = - - | | : .
-      . : | | - - - - - - - - - - = = = = = = = = - - | | : .
-        . : : | | | | | | : - - - - - - - - - - : | | : .
-          . . . : : : : : : : : : : - - : : : : . .
-              . . . . . : : : : : . . .
-                    . . . . . .
-                      . . . .
-"#,
-    r#"
-         . . . . . . . .
-      . . . : : : : : . . . .
-    . . : : : : : : : : : : . .
-    . : | | - - - - - - - - | : .
-  . : | - = = = = = = = = = - | : .
-  . | - = = = = = = = = = = = - | .
-. | - = = = + + + + + + + + + = = - | .
-. | | - = = = + + + + + + + + + = = - | | .
-  . | | - = = = = + + + + + + + + + = = = - | | .
-  . | | - - = = = = + + + + + + + + + + + = = - - | | .
-    . | | - - = = = = = = + + + + + + + + = = = - | | .
-    . : | | - - - = = = = = = = = + + + + + = = - | | : .
-      . : | | - - - - = = = = = = = = + + + = = - | | : .
-        . : | | - - - - - - = = = = = = = = - - | | : .
-          . : : | | | | | - - - - - - - - - | | : : .
-            . . . : : : : : : : - - : : : : . . .
-                . . . . . : : : : : . . .
-                      . . . . . . .
-                        . . . .
-"#,
-    r#"
-           . . . . . . .
-        . . : : : : : : . .
-      . : : : : : : : : : : .
-    . : | | - - - - - - - | : .
-    . | - = = = = = = = = - | .
-  . | - = = = = = = = = = = - | .
-  . | - = = + + + + + + + + = = - | .
-  . | | - = = + + + + + + + + = = - | | .
-    . | | - = = = + + + + + + + + = = - | | .
-    . | | - - = = = + + + + + + + + + = = - | | .
-    . : | | - - = = = = + + + + + + + + = = - | | : .
-      . : | | - - = = = = = = + + + + + = = - | | : .
-        . : | | - - - = = = = = = + + + = = - | | : .
-          . : | | - - - - = = = = = = - - | | : .
-            . : : | | | | - - - - - - | | : : .
-              . . . : : : : : : : : : . . .
-                  . . . . . : : . . . .
-                        . . . .
-"#,
-];
+/// Reaction-diffusion simulation for organic plasma animation
+/// Based on Gray-Scott model - simulates two chemicals that create natural patterns
+struct ReactionDiffusion {
+    width: usize,
+    height: usize,
+    u: Vec<Vec<f64>>, // Chemical U concentration
+    v: Vec<Vec<f64>>, // Chemical V concentration
+    // Parameters tuned for pulsing blob pattern
+    du: f64,   // Diffusion rate of U
+    dv: f64,   // Diffusion rate of V
+    f: f64,    // Feed rate
+    k: f64,    // Kill rate
+    time: f64, // For oscillation
+}
+
+impl ReactionDiffusion {
+    fn new(width: usize, height: usize) -> Self {
+        let mut u = vec![vec![1.0; width]; height];
+        let mut v = vec![vec![0.0; width]; height];
+
+        // Seed the center with chemical V to start the reaction
+        let cx = width / 2;
+        let cy = height / 2;
+        let radius = (width.min(height) / 6) as i32;
+
+        for y in 0..height {
+            for x in 0..width {
+                let dx = x as i32 - cx as i32;
+                let dy = (y as i32 - cy as i32) * 2; // Stretch vertically for terminal aspect ratio
+                let dist = ((dx * dx + dy * dy) as f64).sqrt();
+                if dist < radius as f64 {
+                    u[y][x] = 0.5;
+                    v[y][x] = 0.25;
+                }
+            }
+        }
+
+        Self {
+            width,
+            height,
+            u,
+            v,
+            du: 0.16,  // Diffusion rate U
+            dv: 0.08,  // Diffusion rate V
+            f: 0.035,  // Feed rate - controls pattern type
+            k: 0.065,  // Kill rate - controls pattern density
+            time: 0.0,
+        }
+    }
+
+    fn laplacian(grid: &[Vec<f64>], x: usize, y: usize, width: usize, height: usize) -> f64 {
+        let x_prev = if x == 0 { width - 1 } else { x - 1 };
+        let x_next = if x == width - 1 { 0 } else { x + 1 };
+        let y_prev = if y == 0 { height - 1 } else { y - 1 };
+        let y_next = if y == height - 1 { 0 } else { y + 1 };
+
+        // 5-point stencil Laplacian
+        grid[y_prev][x] + grid[y_next][x] + grid[y][x_prev] + grid[y][x_next] - 4.0 * grid[y][x]
+    }
+
+    fn step(&mut self) {
+        let mut new_u = self.u.clone();
+        let mut new_v = self.v.clone();
+
+        // Oscillating parameters for pulsing effect
+        self.time += 0.05;
+        let pulse = (self.time.sin() * 0.5 + 0.5) * 0.01;
+        let f = self.f + pulse;
+        let k = self.k - pulse * 0.5;
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let u = self.u[y][x];
+                let v = self.v[y][x];
+                let uvv = u * v * v;
+
+                let lap_u = Self::laplacian(&self.u, x, y, self.width, self.height);
+                let lap_v = Self::laplacian(&self.v, x, y, self.width, self.height);
+
+                // Gray-Scott reaction-diffusion equations
+                new_u[y][x] = u + self.du * lap_u - uvv + f * (1.0 - u);
+                new_v[y][x] = v + self.dv * lap_v + uvv - (f + k) * v;
+
+                // Clamp values
+                new_u[y][x] = new_u[y][x].clamp(0.0, 1.0);
+                new_v[y][x] = new_v[y][x].clamp(0.0, 1.0);
+            }
+        }
+
+        self.u = new_u;
+        self.v = new_v;
+    }
+
+    fn render(&self) -> Vec<String> {
+        // ASCII density ramp from sparse to dense
+        let chars = [' ', '·', '-', '=', '+', '*', '#', '@'];
+
+        self.v
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|&val| {
+                        // Map V concentration to character index
+                        let idx = (val * (chars.len() - 1) as f64).round() as usize;
+                        chars[idx.min(chars.len() - 1)]
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+}
 
 /// Current screen/mode
 #[derive(PartialEq, Clone)]
@@ -108,8 +154,8 @@ struct OnboardingApp {
     explorer_tools: Vec<ExplorerTool>,
     explorer_list_state: ListState,
     selected_explorer_tool: Option<ExplorerTool>,
-    // Animation
-    frame_index: usize,
+    // Animation - reaction-diffusion simulation
+    plasma: ReactionDiffusion,
     last_frame_time: Instant,
     // State
     should_exit: bool,
@@ -137,6 +183,9 @@ impl OnboardingApp {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "~".to_string());
 
+        // Initialize plasma simulation - size will be adjusted on first render
+        let plasma = ReactionDiffusion::new(80, 40);
+
         Self {
             ai_tools: AiTool::all().to_vec(),
             ai_list_state,
@@ -147,7 +196,7 @@ impl OnboardingApp {
             explorer_tools: ExplorerTool::all().to_vec(),
             explorer_list_state,
             selected_explorer_tool: None,
-            frame_index: 0,
+            plasma,
             last_frame_time: Instant::now(),
             should_exit: false,
             screen: Screen::SelectAiTool,
@@ -269,9 +318,18 @@ impl OnboardingApp {
     }
 
     fn update_animation(&mut self) {
-        if self.last_frame_time.elapsed() >= Duration::from_millis(300) {
-            self.frame_index = (self.frame_index + 1) % ASCII_FRAMES.len();
+        if self.last_frame_time.elapsed() >= Duration::from_millis(50) {
+            // Run multiple simulation steps for smoother animation
+            for _ in 0..4 {
+                self.plasma.step();
+            }
             self.last_frame_time = Instant::now();
+        }
+    }
+
+    fn resize_plasma(&mut self, width: usize, height: usize) {
+        if self.plasma.width != width || self.plasma.height != height {
+            self.plasma = ReactionDiffusion::new(width, height);
         }
     }
 
@@ -334,14 +392,18 @@ fn draw_ui(frame: &mut Frame, app: &mut OnboardingApp) {
     ])
     .split(area);
 
-    // Draw ASCII animation - centered vertically
-    let ascii_text = ASCII_FRAMES[app.frame_index];
-    let ascii_lines: Vec<Line> = ascii_text
-        .lines()
-        .filter(|line| !line.is_empty())
+    // Resize plasma to fit the available area
+    let plasma_width = main_layout[0].width as usize;
+    let plasma_height = main_layout[0].height as usize;
+    app.resize_plasma(plasma_width.max(10), plasma_height.max(10));
+
+    // Render plasma simulation
+    let plasma_lines = app.plasma.render();
+    let ascii_lines: Vec<Line> = plasma_lines
+        .iter()
         .map(|line| {
             Line::from(Span::styled(
-                line.to_string(),
+                line.clone(),
                 Style::default().fg(Color::Green),
             ))
         })
@@ -359,7 +421,7 @@ fn draw_ui(frame: &mut Frame, app: &mut OnboardingApp) {
         height: ascii_height.min(available_height),
     };
 
-    let ascii_widget = Paragraph::new(ascii_lines).alignment(Alignment::Center);
+    let ascii_widget = Paragraph::new(ascii_lines);
     frame.render_widget(ascii_widget, ascii_area);
 
     // Right side: wrap everything in a bordered block
