@@ -194,8 +194,34 @@ fn main() -> Result<()> {
         Some(Commands::Gc { force }) => commands::gc(force),
         Some(Commands::Update) => commands::update(),
         None => {
-            // Default to open current directory
-            commands::open(None)
+            // Check if config exists - if so, show dashboard; otherwise show onboarding
+            let config_path = crate::config::Config::path()?;
+            if config_path.exists() {
+                // Config exists - show dashboard with session picker
+                match onboarding::run_dashboard()? {
+                    onboarding::DashboardResult::OpenSession(path) => {
+                        commands::open(Some(path))
+                    }
+                    onboarding::DashboardResult::Quit => Ok(()),
+                }
+            } else {
+                // No config - run onboarding
+                if let Some(result) = onboarding::run_onboarding()? {
+                    let config = crate::config::Config {
+                        ai_tool: result.ai_tool,
+                        git_tool: result.git_tool,
+                        explorer_tool: result.explorer_tool,
+                    };
+                    config.save()?;
+                    if let Some(path) = result.path {
+                        commands::open(Some(path.to_string_lossy().to_string()))
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 }
