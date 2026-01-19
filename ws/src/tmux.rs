@@ -28,10 +28,31 @@ pub fn get_active_sessions() -> HashSet<String> {
     }
 }
 
+/// Check if we're running inside a tmux session
+pub fn is_inside_tmux() -> bool {
+    std::env::var("TMUX").is_ok()
+}
+
 /// Attach to an existing tmux session (replaces current process)
+/// If already inside tmux, uses switch-client instead of attach
 pub fn attach(session: &str) -> Result<()> {
-    let err = exec::execvp("tmux", &["tmux", "attach", "-t", session]);
-    anyhow::bail!("Failed to attach to tmux: {}", err);
+    if is_inside_tmux() {
+        // Inside tmux (including popups), use switch-client
+        let result = Command::new("tmux")
+            .args(["switch-client", "-t", session])
+            .output()
+            .context("Failed to switch tmux client")?;
+
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            anyhow::bail!("Failed to switch to session: {}", stderr.trim());
+        }
+        Ok(())
+    } else {
+        // Outside tmux, use attach (replaces current process)
+        let err = exec::execvp("tmux", &["tmux", "attach", "-t", session]);
+        anyhow::bail!("Failed to attach to tmux: {}", err);
+    }
 }
 
 /// Kill a tmux session

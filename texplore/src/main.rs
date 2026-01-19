@@ -160,7 +160,7 @@ impl App {
             focus: 0,
             scroll: 0,
             status: String::from(
-                "q: quit  j/k: move  h/l/Enter: collapse/expand  d: delete  y: confirm  o: open",
+                "q: quit  j/k: move  h/l/Enter: collapse/expand  d: delete  o: open  C: copy path",
             ),
             pending_delete: None,
             viewer: None,
@@ -280,6 +280,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
         KeyCode::Char('d') => prompt_delete(app),
         KeyCode::Char('o') => open_with_bat(app)?,
         KeyCode::Char('y') => confirm_delete(app)?,
+        KeyCode::Char('C') => copy_path_to_clipboard(app)?,
         KeyCode::Enter => toggle_or_open(app)?,
         KeyCode::Esc => cancel_delete(app),
         _ => {}
@@ -439,6 +440,58 @@ fn move_focus(app: &mut App, delta: isize) {
         next = len - 1;
     }
     app.focus = next as usize;
+}
+
+fn copy_path_to_clipboard(app: &mut App) -> io::Result<()> {
+    let entry = match app.visible.get(app.focus) {
+        Some(entry) => entry.clone(),
+        None => return Ok(()),
+    };
+
+    // Get relative path from root
+    let rel_path = entry
+        .path
+        .strip_prefix(&app.root_path)
+        .unwrap_or(&entry.path);
+
+    let path_str = rel_path.display().to_string();
+
+    // Use pbcopy on macOS, xclip/xsel on Linux
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(path_str.as_bytes())?;
+            }
+            child.wait()
+        });
+
+    #[cfg(not(target_os = "macos"))]
+    let result = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(path_str.as_bytes())?;
+            }
+            child.wait()
+        });
+
+    match result {
+        Ok(status) if status.success() => {
+            app.status = format!("copied: {}", path_str);
+        }
+        _ => {
+            app.status = String::from("failed to copy to clipboard");
+        }
+    }
+
+    Ok(())
 }
 
 fn open_with_bat(app: &mut App) -> io::Result<()> {
