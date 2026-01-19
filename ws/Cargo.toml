@@ -1,6 +1,6 @@
 [package]
 name = "ws"
-version = "0.3.8"
+version = "0.3.9"
 edition.workspace = true
 authors.workspace = true
 description = "Workspace CLI for git worktrees with tmux layouts"
