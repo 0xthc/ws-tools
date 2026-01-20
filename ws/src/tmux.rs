@@ -118,6 +118,9 @@ pub fn create_session_with_title(session: &str, dir: &Path, window_title: &str) 
         .output()
         .context("Failed to create tmux session")?;
 
+    // Set up status bar with PR info
+    setup_status_bar(session, dir)?;
+
     // Create layout based on display size
     if is_large_display() {
         create_large_layout(
@@ -139,6 +142,38 @@ pub fn create_session_with_title(session: &str, dir: &Path, window_title: &str) 
         )?;
     }
 
+    Ok(())
+}
+
+/// Set up tmux status bar with branch and PR info
+fn setup_status_bar(session: &str, dir: &Path) -> Result<()> {
+    let dir_str = dir.to_str().context("Invalid path")?;
+    
+    // Create the status script if it doesn't exist
+    ensure_status_script()?;
+    
+    // Set status-right to call our script with the directory
+    // The script caches results for 60s to avoid lag
+    let status_cmd = format!("#(ws --status-bar \"{}\")", dir_str);
+    
+    Command::new("tmux")
+        .args(["set-option", "-t", session, "status-right", &status_cmd])
+        .output()
+        .context("Failed to set status-right")?;
+    
+    // Set status-right-length to allow longer content
+    Command::new("tmux")
+        .args(["set-option", "-t", session, "status-right-length", "100"])
+        .output()
+        .context("Failed to set status-right-length")?;
+    
+    Ok(())
+}
+
+/// Ensure the status script exists in ~/.ws/
+fn ensure_status_script() -> Result<()> {
+    // The script is now built into ws itself via --status-bar flag
+    // No external script needed
     Ok(())
 }
 
