@@ -3,7 +3,7 @@ use crate::git;
 use crate::tmux;
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -253,7 +253,8 @@ impl ReactionDiffusion {
 pub enum StatusAction {
     None,
     Open(PathBuf),
-    Ai, // Needs to run its own TUI
+    Ai,            // Needs to run its own TUI
+    ReviewPr(u32), // Review a PR by number
 }
 
 /// Entry representing a worktree with its session info
@@ -1156,20 +1157,9 @@ fn draw_status(frame: &mut Frame, app: &mut StatusApp) {
     }
 }
 
-fn draw_footer(frame: &mut Frame, app: &StatusApp, area: Rect) {
-    let footer_content = if let Some((msg, is_error)) = &app.message {
-        vec![
-            Span::styled(
-                if *is_error { " ✗ " } else { " ✓ " },
-                Style::default().fg(if *is_error {
-                    RatColor::Red
-                } else {
-                    RatColor::Green
-                }),
-            ),
-            Span::raw(msg.as_str()),
-        ]
-    } else if app.has_orphans() {
+/// Build worktree action footer spans (shared between status and dashboard)
+fn worktree_footer_spans(has_orphans: bool) -> Vec<Span<'static>> {
+    if has_orphans {
         vec![
             Span::styled("o", Style::default().fg(RatColor::Cyan)),
             Span::raw("pen "),
@@ -1213,6 +1203,52 @@ fn draw_footer(frame: &mut Frame, app: &StatusApp, area: Rect) {
             Span::styled("q", Style::default().fg(RatColor::Cyan)),
             Span::raw("uit"),
         ]
+    }
+}
+
+/// Build PR action footer spans
+fn pr_footer_spans(worktree_exists: bool) -> Vec<Span<'static>> {
+    let status = if worktree_exists {
+        vec![
+            Span::styled(" ✓ ", Style::default().fg(RatColor::Green)),
+            Span::raw("Worktree exists  "),
+            Span::styled("│", Style::default().fg(RatColor::DarkGray)),
+            Span::raw(" "),
+        ]
+    } else {
+        vec![
+            Span::styled(" ○ ", Style::default().fg(RatColor::Yellow)),
+            Span::raw("No worktree  "),
+            Span::styled("│", Style::default().fg(RatColor::DarkGray)),
+            Span::raw(" "),
+        ]
+    };
+    
+    let mut spans = status;
+    spans.extend(vec![
+        Span::styled("Enter", Style::default().fg(RatColor::Cyan)),
+        Span::raw(" review "),
+        Span::styled("q", Style::default().fg(RatColor::Cyan)),
+        Span::raw("uit"),
+    ]);
+    spans
+}
+
+fn draw_footer(frame: &mut Frame, app: &StatusApp, area: Rect) {
+    let footer_content = if let Some((msg, is_error)) = &app.message {
+        vec![
+            Span::styled(
+                if *is_error { " ✗ " } else { " ✓ " },
+                Style::default().fg(if *is_error {
+                    RatColor::Red
+                } else {
+                    RatColor::Green
+                }),
+            ),
+            Span::raw(msg.as_str()),
+        ]
+    } else {
+        worktree_footer_spans(app.has_orphans())
     };
 
     let footer = Paragraph::new(Line::from(footer_content));
@@ -1542,22 +1578,176 @@ fn run_status_loop(
 // Dashboard (Plasma + Status)
 // ============================================================================
 
+/// PR check status
+#[derive(Clone, PartialEq)]
+enum CheckStatus {
+    Pending,
+    Success,
+    Failure,
+    Unknown,
+}
+
+/// PR entry for display
+#[derive(Clone)]
+struct PrEntry {
+    number: u32,
+    title: String,
+    branch: String,
+    checks: CheckStatus,
+}
+
 /// Dashboard app state with plasma animation
 struct DashboardApp {
     status: StatusApp,
     plasma: ReactionDiffusion,
     last_frame: Instant,
+    prs: Vec<PrEntry>,
+    pr_table_state: TableState,
+    focus: DashboardFocus,
+    gh_available: bool,
+    // Areas for mouse click detection
+    pr_area: Option<Rect>,
+    worktree_area: Option<Rect>,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum DashboardFocus {
+    Worktrees,
+    PullRequests,
 }
 
 impl DashboardApp {
     fn new() -> Result<Self> {
         let status = StatusApp::new()?;
         let metrics = WorkspaceMetrics::from_git_root(&status.git_root);
+        
+        // Check if gh is available
+        let gh_available = which::which("gh").is_ok();
+        
+        // Fetch PRs if gh is available
+        let prs = if gh_available {
+            Self::fetch_prs(&status.git_root)
+        } else {
+            Vec::new()
+        };
+        
+        let mut pr_table_state = TableState::default();
+        if !prs.is_empty() {
+            pr_table_state.select(Some(0));
+        }
+        
         Ok(Self {
             status,
             plasma: ReactionDiffusion::with_metrics(80, 40, metrics),
             last_frame: Instant::now(),
+            prs,
+            pr_table_state,
+            focus: DashboardFocus::Worktrees,
+            gh_available,
+            pr_area: None,
+            worktree_area: None,
         })
+    }
+    
+    fn handle_mouse_click(&mut self, x: u16, y: u16) {
+        // Check if click is in PR area
+        if let Some(pr_area) = self.pr_area {
+            if x >= pr_area.x && x < pr_area.x + pr_area.width
+                && y >= pr_area.y && y < pr_area.y + pr_area.height
+            {
+                self.focus = DashboardFocus::PullRequests;
+                // Calculate which row was clicked (accounting for border)
+                let row = y.saturating_sub(pr_area.y + 1) as usize;
+                if row < self.prs.len() {
+                    self.pr_table_state.select(Some(row));
+                }
+                return;
+            }
+        }
+        
+        // Check if click is in worktree area
+        if let Some(wt_area) = self.worktree_area {
+            if x >= wt_area.x && x < wt_area.x + wt_area.width
+                && y >= wt_area.y && y < wt_area.y + wt_area.height
+            {
+                self.focus = DashboardFocus::Worktrees;
+                // Calculate which row was clicked (accounting for header + border)
+                let row = y.saturating_sub(wt_area.y + 2) as usize;
+                if row < self.status.entries.len() {
+                    self.status.table_state.select(Some(row));
+                }
+            }
+        }
+    }
+    
+    fn fetch_prs(git_root: &std::path::Path) -> Vec<PrEntry> {
+        let output = std::process::Command::new("gh")
+            .current_dir(git_root)
+            .args(["pr", "list", "--json", "number,title,headRefName,statusCheckRollup", "--limit", "10"])
+            .output();
+        
+        match output {
+            Ok(o) if o.status.success() => {
+                if let Ok(prs) = serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout) {
+                    prs.iter()
+                        .filter_map(|pr| {
+                            let checks = Self::parse_check_status(&pr["statusCheckRollup"]);
+                            Some(PrEntry {
+                                number: pr["number"].as_u64()? as u32,
+                                title: pr["title"].as_str()?.to_string(),
+                                branch: pr["headRefName"].as_str()?.to_string(),
+                                checks,
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+    
+    fn parse_check_status(rollup: &serde_json::Value) -> CheckStatus {
+        let checks = match rollup.as_array() {
+            Some(arr) => arr,
+            None => return CheckStatus::Unknown,
+        };
+        
+        if checks.is_empty() {
+            return CheckStatus::Unknown;
+        }
+        
+        let mut has_pending = false;
+        let mut has_failure = false;
+        
+        for check in checks {
+            // Check both "state" (for check runs) and "conclusion" (for status contexts)
+            let state = check["state"].as_str().unwrap_or("");
+            let conclusion = check["conclusion"].as_str().unwrap_or("");
+            let status = check["status"].as_str().unwrap_or("");
+            
+            // Failure states
+            if state == "FAILURE" || state == "ERROR" 
+                || conclusion == "FAILURE" || conclusion == "failure"
+                || conclusion == "ERROR" || conclusion == "error" {
+                has_failure = true;
+            }
+            // Pending states
+            else if state == "PENDING" || state == "EXPECTED" 
+                || status == "IN_PROGRESS" || status == "QUEUED"
+                || conclusion.is_empty() {
+                has_pending = true;
+            }
+        }
+        
+        if has_failure {
+            CheckStatus::Failure
+        } else if has_pending {
+            CheckStatus::Pending
+        } else {
+            CheckStatus::Success
+        }
     }
 
     fn update_plasma(&mut self) {
@@ -1567,6 +1757,37 @@ impl DashboardApp {
             }
             self.last_frame = Instant::now();
         }
+    }
+    
+    fn toggle_focus(&mut self) {
+        if self.gh_available && !self.prs.is_empty() {
+            self.focus = match self.focus {
+                DashboardFocus::Worktrees => DashboardFocus::PullRequests,
+                DashboardFocus::PullRequests => DashboardFocus::Worktrees,
+            };
+        }
+    }
+    
+    fn next_pr(&mut self) {
+        if self.prs.is_empty() {
+            return;
+        }
+        let i = self.pr_table_state.selected().unwrap_or(0);
+        let next = if i >= self.prs.len() - 1 { 0 } else { i + 1 };
+        self.pr_table_state.select(Some(next));
+    }
+    
+    fn prev_pr(&mut self) {
+        if self.prs.is_empty() {
+            return;
+        }
+        let i = self.pr_table_state.selected().unwrap_or(0);
+        let prev = if i == 0 { self.prs.len() - 1 } else { i - 1 };
+        self.pr_table_state.select(Some(prev));
+    }
+    
+    fn selected_pr(&self) -> Option<&PrEntry> {
+        self.pr_table_state.selected().and_then(|i| self.prs.get(i))
     }
 }
 
@@ -1601,37 +1822,101 @@ fn draw_dashboard(frame: &mut Frame, app: &mut DashboardApp) {
 
     frame.render_widget(Paragraph::new(plasma_text), plasma_area);
 
-    // Right: Status content (without the title, embedded in block)
-    draw_status_in_area(frame, &mut app.status, layout[1]);
+    // Right: Status content with PR list
+    draw_dashboard_content(frame, app, layout[1]);
 }
 
-fn draw_status_in_area(frame: &mut Frame, app: &mut StatusApp, area: Rect) {
-    // Wrap status in a bordered block with repo name
+fn draw_dashboard_content(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
+    // Wrap in a bordered block with repo name
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(RatColor::DarkGray))
-        .title(format!(" {} ", app.repo_name));
+        .title(format!(" {} ", app.status.repo_name));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Layout inside the block
-    let chunks = if app.has_orphans() {
+    // Layout: PRs (if available) | Worktrees | Footer
+    let has_prs = app.gh_available && !app.prs.is_empty();
+    let chunks = if has_prs {
         Layout::vertical([
-            Constraint::Min(5),    // Main table
-            Constraint::Length(6), // Orphan tables
+            Constraint::Length(app.prs.len().min(5) as u16 + 3), // PR table (max 5 rows + header + borders)
+            Constraint::Min(5),    // Worktrees table
             Constraint::Length(2), // Footer
         ])
         .split(inner)
     } else {
         Layout::vertical([
-            Constraint::Min(5),    // Main table
+            Constraint::Min(5),    // Worktrees table
             Constraint::Length(2), // Footer
         ])
         .split(inner)
     };
 
-    // Main table (reuse existing row building logic)
+    let (pr_area_rect, worktree_area_rect, footer_area) = if has_prs {
+        (Some(chunks[0]), chunks[1], chunks[2])
+    } else {
+        (None, chunks[0], chunks[1])
+    };
+    
+    // Store areas for mouse click detection
+    app.pr_area = pr_area_rect;
+    app.worktree_area = Some(worktree_area_rect);
+
+    // Draw PR table if available
+    if let Some(pr_area) = pr_area_rect {
+        let pr_rows: Vec<Row> = app
+            .prs
+            .iter()
+            .take(5)
+            .map(|pr| {
+                let (check_icon, check_style) = match pr.checks {
+                    CheckStatus::Success => ("✓", Style::default().fg(RatColor::Green)),
+                    CheckStatus::Failure => ("✗", Style::default().fg(RatColor::Red)),
+                    CheckStatus::Pending => ("○", Style::default().fg(RatColor::Yellow)),
+                    CheckStatus::Unknown => (" ", Style::default().fg(RatColor::DarkGray)),
+                };
+                Row::new(vec![
+                    RatCell::from(check_icon).style(check_style),
+                    RatCell::from(format!("#{}", pr.number)).style(Style::default().fg(RatColor::Cyan)),
+                    RatCell::from(pr.title.chars().take(35).collect::<String>()),
+                    RatCell::from(pr.branch.as_str()).style(Style::default().fg(RatColor::DarkGray)),
+                ])
+            })
+            .collect();
+
+        let pr_block_style = if app.focus == DashboardFocus::PullRequests {
+            Style::default().fg(RatColor::Cyan)
+        } else {
+            Style::default().fg(RatColor::DarkGray)
+        };
+
+        let pr_table = RatTable::new(
+            pr_rows,
+            [
+                Constraint::Length(2),
+                Constraint::Length(6),
+                Constraint::Percentage(55),
+                Constraint::Percentage(45),
+            ],
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Pull Requests ")
+                .border_style(pr_block_style),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(RatColor::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+        frame.render_stateful_widget(pr_table, pr_area, &mut app.pr_table_state);
+    }
+
+    // Draw worktrees table
     let header = Row::new(vec![
         RatCell::from("").style(Style::default()),
         RatCell::from("Session").style(Style::default().fg(RatColor::Cyan)),
@@ -1640,6 +1925,7 @@ fn draw_status_in_area(frame: &mut Frame, app: &mut StatusApp, area: Rect) {
     .height(1);
 
     let rows: Vec<Row> = app
+        .status
         .entries
         .iter()
         .map(|entry| {
@@ -1664,6 +1950,12 @@ fn draw_status_in_area(frame: &mut Frame, app: &mut StatusApp, area: Rect) {
         })
         .collect();
 
+    let worktree_block_style = if app.focus == DashboardFocus::Worktrees {
+        Style::default().fg(RatColor::Cyan)
+    } else {
+        Style::default().fg(RatColor::DarkGray)
+    };
+
     let table = RatTable::new(
         rows,
         [
@@ -1677,7 +1969,7 @@ fn draw_status_in_area(frame: &mut Frame, app: &mut StatusApp, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Worktrees & Sessions ")
-            .border_style(Style::default().fg(RatColor::DarkGray)),
+            .border_style(worktree_block_style),
     )
     .row_highlight_style(
         Style::default()
@@ -1686,65 +1978,22 @@ fn draw_status_in_area(frame: &mut Frame, app: &mut StatusApp, area: Rect) {
     )
     .highlight_symbol("> ");
 
-    frame.render_stateful_widget(table, chunks[0], &mut app.table_state);
+    frame.render_stateful_widget(table, worktree_area_rect, &mut app.status.table_state);
 
-    if app.has_orphans() {
-        let orphan_chunks =
-            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[1]);
+    // Dynamic footer based on focus (reuses shared footer spans)
+    let footer_text = match app.focus {
+        DashboardFocus::PullRequests => {
+            // Check if selected PR's branch has a worktree
+            let worktree_exists = app.selected_pr()
+                .map(|pr| app.status.entries.iter().any(|e| e.branch == pr.branch))
+                .unwrap_or(false);
+            pr_footer_spans(worktree_exists)
+        }
+        DashboardFocus::Worktrees => worktree_footer_spans(app.status.has_orphans()),
+    };
 
-        // Orphaned sessions
-        let session_rows: Vec<Row> = if app.orphaned_sessions.is_empty() {
-            vec![Row::new(vec![
-                RatCell::from("None").style(Style::default().fg(RatColor::DarkGray))
-            ])]
-        } else {
-            app.orphaned_sessions
-                .iter()
-                .map(|s| Row::new(vec![RatCell::from(s.as_str())]))
-                .collect()
-        };
-        let sessions_table = RatTable::new(session_rows, [Constraint::Percentage(100)]).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(" Orphaned Sessions ", Style::default().fg(RatColor::Red)))
-                .border_style(Style::default().fg(RatColor::DarkGray)),
-        );
-        frame.render_widget(sessions_table, orphan_chunks[0]);
-
-        // Orphaned worktrees
-        let worktree_rows: Vec<Row> = if app.orphaned_worktrees.is_empty() {
-            vec![Row::new(vec![
-                RatCell::from("None").style(Style::default().fg(RatColor::DarkGray))
-            ])]
-        } else {
-            app.orphaned_worktrees
-                .iter()
-                .map(|b| Row::new(vec![RatCell::from(b.as_str())]))
-                .collect()
-        };
-        let worktrees_table = RatTable::new(worktree_rows, [Constraint::Percentage(100)]).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(" Orphaned Worktrees ", Style::default().fg(RatColor::Yellow)))
-                .border_style(Style::default().fg(RatColor::DarkGray)),
-        );
-        frame.render_widget(worktrees_table, orphan_chunks[1]);
-
-        draw_footer(frame, app, chunks[2]);
-    } else {
-        draw_footer(frame, app, chunks[1]);
-    }
-
-    // Draw overlays on top of everything
-    match app.input_mode {
-        InputMode::NewBranch => draw_new_branch_popup(frame, app),
-        InputMode::ConfirmDelete => draw_delete_popup(frame, app),
-        InputMode::SyncMenu => draw_sync_popup(frame),
-        InputMode::PrMenu => draw_pr_popup(frame),
-        InputMode::Help => draw_help_popup(frame),
-        InputMode::Normal => {}
-    }
+    let footer = Paragraph::new(Line::from(footer_text));
+    frame.render_widget(footer, footer_area);
 }
 
 /// Show dashboard with plasma animation on left and status on right
@@ -1753,14 +2002,14 @@ pub fn dashboard() -> Result<StatusAction> {
 
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_dashboard_loop(&mut terminal, &mut app);
 
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
 
     result?;
     Ok(app.status.action)
@@ -1778,10 +2027,47 @@ fn run_dashboard_loop(
         terminal.draw(|frame| draw_dashboard(frame, app))?;
 
         if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Handle dashboard-specific keys first
+                    match key.code {
+                        KeyCode::Tab => {
+                            app.toggle_focus();
+                            continue;
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            if app.focus == DashboardFocus::PullRequests {
+                                app.next_pr();
+                                continue;
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if app.focus == DashboardFocus::PullRequests {
+                                app.prev_pr();
+                                continue;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if app.focus == DashboardFocus::PullRequests {
+                                if let Some(pr) = app.selected_pr() {
+                                    // Set action to review this PR
+                                    app.status.action = StatusAction::ReviewPr(pr.number);
+                                    app.status.should_exit = true;
+                                }
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+                    // Fall through to status key handling
                     app.status.handle_key(key.code);
                 }
+                Event::Mouse(mouse) => {
+                    if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                        app.handle_mouse_click(mouse.column, mouse.row);
+                    }
+                }
+                _ => {}
             }
         }
     }

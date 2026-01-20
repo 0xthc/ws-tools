@@ -145,6 +145,7 @@ fn handle_status_action(action: StatusAction) -> Result<()> {
         StatusAction::None => Ok(()),
         StatusAction::Open(path) => commands::open(Some(path.to_string_lossy().to_string())),
         StatusAction::Ai => commands::ai(None),
+        StatusAction::ReviewPr(number) => commands::review(number),
     }
 }
 

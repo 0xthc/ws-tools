@@ -41,6 +41,12 @@ const DEPENDENCIES: &[Dependency] = &[
         description: "Claude Code CLI (install from claude.ai)",
         required: false,
     },
+    Dependency {
+        name: "gh",
+        brew_name: "gh",
+        description: "GitHub CLI for PR management",
+        required: false,
+    },
 ];
 
 /// Check and install dependencies
