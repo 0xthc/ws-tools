@@ -104,13 +104,6 @@ enum Commands {
         tool: Option<String>,
     },
 
-    /// Quick switch to a worktree by branch name
-    #[command(alias = "sw")]
-    Switch {
-        /// Branch name to switch to
-        branch: String,
-    },
-
     /// Clone a repository and set up workspace structure
     #[command(alias = "c")]
     Clone {
@@ -189,7 +182,7 @@ fn main() -> Result<()> {
         Some(Commands::Config { key, value }) => commands::config(key, value),
         Some(Commands::Init) => commands::init(),
         Some(Commands::Ai { tool }) => commands::ai(tool),
-        Some(Commands::Switch { branch }) => commands::switch(&branch),
+
         Some(Commands::Clone { url }) => commands::clone_repo(&url),
         Some(Commands::Pr { action }) => match action {
             Some(PrCommands::List) => commands::pr_list(),

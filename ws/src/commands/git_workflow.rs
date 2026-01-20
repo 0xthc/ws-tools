@@ -1,4 +1,4 @@
-use super::workspace::{new, open};
+use super::workspace::open;
 use super::{get_session_name, get_workspaces_dir};
 use crate::git;
 use crate::tmux;
@@ -6,40 +6,6 @@ use anyhow::{Context, Result};
 use colored::*;
 use std::io::{self, BufRead, Write};
 use std::process::Command;
-
-/// Quick switch to a worktree by branch name
-pub fn switch(branch: &str) -> Result<()> {
-    let git_root = git::get_root(None).context("Not in a git repository")?;
-
-    // Find the worktree
-    match git::find_worktree(&git_root, branch)? {
-        Some(wt) => {
-            println!(
-                "{} Switching to worktree: {}",
-                "::".blue().bold(),
-                wt.branch
-            );
-            open(Some(wt.path.display().to_string()))
-        }
-        None => {
-            // Worktree doesn't exist, ask to create
-            let default_branch = git::get_default_branch(Some(&git_root));
-            println!("{} Worktree '{}' not found.", "::".yellow().bold(), branch);
-            print!("Create new worktree from {}? [Y/n]: ", default_branch);
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().lock().read_line(&mut input)?;
-            let input = input.trim().to_lowercase();
-
-            if input.is_empty() || input == "y" || input == "yes" {
-                new(branch, &default_branch)
-            } else {
-                anyhow::bail!("Aborted");
-            }
-        }
-    }
-}
 
 /// Clone a repository and set up workspace structure
 pub fn clone_repo(url: &str) -> Result<()> {
