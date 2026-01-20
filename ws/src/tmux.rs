@@ -33,28 +33,6 @@ pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok()
 }
 
-/// Get the current tmux session name (if inside tmux)
-pub fn get_current_session() -> Option<String> {
-    if !is_inside_tmux() {
-        return None;
-    }
-    let output = Command::new("tmux")
-        .args(["display-message", "-p", "#{session_name}"])
-        .output()
-        .ok()?;
-    
-    if output.status.success() {
-        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if name.is_empty() {
-            None
-        } else {
-            Some(name)
-        }
-    } else {
-        None
-    }
-}
-
 /// Attach to an existing tmux session (replaces current process)
 /// If already inside tmux, uses switch-client instead of attach
 pub fn attach(session: &str) -> Result<()> {

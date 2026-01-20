@@ -10,7 +10,7 @@ pub use ai::ai;
 pub use config::{config, init};
 pub use doctor::doctor;
 pub use git_workflow::{clone_repo, gc, pr_create, pr_list, review, switch};
-pub use status::status;
+pub use status::{dashboard, status, StatusAction};
 pub use update::update;
 pub use workspace::{delete, list, new, open, reload, select, sync};
 

@@ -1,7 +1,6 @@
 use crate::config::{AiTool, Config, ExplorerTool, GitTool};
 use crate::git;
-use crate::tmux;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -21,78 +20,23 @@ use std::time::{Duration, Instant};
 
 /// Workspace metrics used to create unique plasma patterns
 #[derive(Clone)]
-pub struct WorkspaceMetrics {
-    pub repo_name: String,
-    pub num_worktrees: usize,
-    pub num_commits: usize,
-    pub num_branches: usize,
-    pub active_sessions: usize,
+struct WorkspaceMetrics {
+    repo_name: String,
+    num_commits: usize,
+    active_sessions: usize,
 }
 
 impl Default for WorkspaceMetrics {
     fn default() -> Self {
         Self {
             repo_name: "default".to_string(),
-            num_worktrees: 1,
             num_commits: 100,
-            num_branches: 1,
             active_sessions: 1,
         }
     }
 }
 
 impl WorkspaceMetrics {
-    /// Create metrics from current git repository
-    pub fn from_current_repo() -> Self {
-        let mut metrics = Self::default();
-
-        // Get repo name
-        if let Ok(root) = git::get_root(None) {
-            if let Some(name) = root.file_name() {
-                metrics.repo_name = name.to_string_lossy().to_string();
-            }
-
-            // Get worktrees
-            if let Ok(worktrees) = git::list_worktrees(&root) {
-                metrics.num_worktrees = worktrees.len();
-            }
-
-            // Get commit count (approximate, last 1000)
-            if let Ok(output) = std::process::Command::new("git")
-                .args(["rev-list", "--count", "HEAD"])
-                .current_dir(&root)
-                .output()
-            {
-                if output.status.success() {
-                    if let Ok(count) = String::from_utf8_lossy(&output.stdout).trim().parse() {
-                        metrics.num_commits = count;
-                    }
-                }
-            }
-
-            // Get branch count
-            if let Ok(output) = std::process::Command::new("git")
-                .args(["branch", "-a", "--list"])
-                .current_dir(&root)
-                .output()
-            {
-                if output.status.success() {
-                    metrics.num_branches = String::from_utf8_lossy(&output.stdout).lines().count();
-                }
-            }
-        }
-
-        // Get active tmux sessions for this repo
-        let sessions = tmux::get_active_sessions();
-        metrics.active_sessions = sessions
-            .iter()
-            .filter(|s| s.starts_with(&format!("{}-", metrics.repo_name)))
-            .count()
-            .max(1);
-
-        metrics
-    }
-
     /// Generate a hash from repo name for consistent randomization
     fn name_hash(&self) -> u64 {
         self.repo_name
@@ -110,15 +54,14 @@ struct ReactionDiffusion {
     u: Vec<Vec<f64>>, // Chemical U concentration
     v: Vec<Vec<f64>>, // Chemical V concentration
     // Parameters derived from workspace metrics
-    du: f64,          // Diffusion rate of U
-    dv: f64,          // Diffusion rate of V
-    f: f64,           // Feed rate
-    k: f64,           // Kill rate
-    time: f64,        // For oscillation
-    pulse_speed: f64, // How fast the pattern pulses
-    num_seeds: usize, // Number of seed points (nucleation centers)
+    du: f64,                             // Diffusion rate of U
+    dv: f64,                             // Diffusion rate of V
+    f: f64,                              // Feed rate
+    k: f64,                              // Kill rate
+    time: f64,                           // For oscillation
+    pulse_speed: f64,                    // How fast the pattern pulses
+    num_seeds: usize,                    // Number of seed points (nucleation centers)
     seed_positions: Vec<(usize, usize)>, // Positions of seed points
-    metrics: WorkspaceMetrics,
 }
 
 impl ReactionDiffusion {
@@ -158,7 +101,8 @@ impl ReactionDiffusion {
             let radius = (width.min(height) / 4) as f64;
 
             for i in 0..num_seeds {
-                let angle = angle_offset + (i as f64 * 2.0 * std::f64::consts::PI / num_seeds as f64);
+                let angle =
+                    angle_offset + (i as f64 * 2.0 * std::f64::consts::PI / num_seeds as f64);
                 let sx = (cx as f64 + angle.cos() * radius * 0.5) as usize;
                 let sy = (cy as f64 + angle.sin() * radius * 0.25) as usize; // Aspect ratio
                 seed_positions.push((sx.clamp(1, width - 2), sy.clamp(1, height - 2)));
@@ -198,13 +142,6 @@ impl ReactionDiffusion {
             pulse_speed,
             num_seeds,
             seed_positions,
-            metrics,
-        }
-    }
-
-    fn resize_with_metrics(&mut self, width: usize, height: usize) {
-        if self.width != width || self.height != height {
-            *self = Self::with_metrics(width, height, self.metrics.clone());
         }
     }
 
@@ -291,7 +228,7 @@ impl ReactionDiffusion {
 #[derive(PartialEq, Clone)]
 #[allow(clippy::enum_variant_names)]
 enum Screen {
-    SelectPath,     // First screen when not in git repo
+    SelectPath, // First screen when not in git repo
     SelectAiTool,
     SelectGitTool,
     SelectExplorer,
@@ -976,348 +913,4 @@ pub fn check_and_run_onboarding() -> Result<Option<PathBuf>> {
     }
 
     Ok(None)
-}
-
-/// Session entry for dashboard
-struct SessionEntry {
-    #[allow(dead_code)]
-    name: String,
-    branch: String,
-    path: PathBuf,
-    has_session: bool,
-    is_current: bool,
-}
-
-/// Dashboard application state (for existing config)
-struct DashboardApp {
-    sessions: Vec<SessionEntry>,
-    list_state: ListState,
-    plasma: ReactionDiffusion,
-    last_frame_time: Instant,
-    should_exit: bool,
-    selected_session: Option<String>,
-    repo_name: String,
-}
-
-impl DashboardApp {
-    fn new() -> Result<Self> {
-        let git_root = git::get_root(None).context("Not in a git repository")?;
-        let worktrees = git::list_worktrees(&git_root)?;
-        let active_sessions = tmux::get_active_sessions();
-        let current_session = tmux::get_current_session();
-
-        let repo_name = git_root
-            .file_name()
-            .context("Invalid git root")?
-            .to_string_lossy()
-            .to_string();
-
-        let mut sessions: Vec<SessionEntry> = Vec::new();
-
-        for wt in &worktrees {
-            let session_name = format!(
-                "{}-{}",
-                repo_name,
-                wt.path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| wt.branch.clone())
-            );
-            let has_session = active_sessions.contains(&session_name);
-            let is_current = current_session.as_ref() == Some(&session_name);
-
-            sessions.push(SessionEntry {
-                name: session_name,
-                branch: wt.branch.clone(),
-                path: wt.path.clone(),
-                has_session,
-                is_current,
-            });
-        }
-
-        // Sort: current first, then active sessions, then inactive
-        sessions.sort_by(|a, b| {
-            match (a.is_current, b.is_current) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => match (a.has_session, b.has_session) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.branch.cmp(&b.branch),
-                }
-            }
-        });
-
-        let mut list_state = ListState::default();
-        if !sessions.is_empty() {
-            list_state.select(Some(0));
-        }
-
-        // Create workspace metrics for unique plasma pattern
-        let metrics = WorkspaceMetrics::from_current_repo();
-        let plasma = ReactionDiffusion::with_metrics(80, 40, metrics.clone());
-
-        Ok(Self {
-            sessions,
-            list_state,
-            plasma,
-            last_frame_time: Instant::now(),
-            should_exit: false,
-            selected_session: None,
-            repo_name,
-        })
-    }
-
-    fn update_animation(&mut self) {
-        if self.last_frame_time.elapsed() >= Duration::from_millis(50) {
-            for _ in 0..4 {
-                self.plasma.step();
-            }
-            self.last_frame_time = Instant::now();
-        }
-    }
-
-    fn resize_plasma(&mut self, width: usize, height: usize) {
-        self.plasma.resize_with_metrics(width, height);
-    }
-
-    fn next_item(&mut self) {
-        if self.sessions.is_empty() {
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.sessions.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
-    }
-
-    fn previous_item(&mut self) {
-        if self.sessions.is_empty() {
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.sessions.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
-    }
-
-    fn select_current(&mut self) {
-        if let Some(i) = self.list_state.selected() {
-            if i < self.sessions.len() {
-                self.selected_session = Some(self.sessions[i].path.to_string_lossy().to_string());
-                self.should_exit = true;
-            }
-        }
-    }
-
-    fn handle_key(&mut self, key: KeyCode) {
-        match key {
-            KeyCode::Up | KeyCode::Char('k') => self.previous_item(),
-            KeyCode::Down | KeyCode::Char('j') => self.next_item(),
-            KeyCode::Enter | KeyCode::Char(' ') => self.select_current(),
-            KeyCode::Esc | KeyCode::Char('q') => self.should_exit = true,
-            _ => {}
-        }
-    }
-}
-
-fn draw_dashboard(frame: &mut Frame, app: &mut DashboardApp) {
-    let area = frame.area();
-
-    // Main horizontal layout: Plasma (left) | Content (right)
-    let main_layout = Layout::horizontal([
-        Constraint::Percentage(45),
-        Constraint::Percentage(55),
-    ])
-    .split(area);
-
-    // Resize plasma to fit
-    let plasma_width = main_layout[0].width as usize;
-    let plasma_height = main_layout[0].height as usize;
-    app.resize_plasma(plasma_width.max(10), plasma_height.max(10));
-
-    // Render plasma
-    let plasma_lines = app.plasma.render();
-    let ascii_lines: Vec<Line> = plasma_lines
-        .iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                line.clone(),
-                Style::default().fg(Color::Green),
-            ))
-        })
-        .collect();
-
-    let ascii_height = ascii_lines.len() as u16;
-    let available_height = main_layout[0].height;
-    let vertical_padding = available_height.saturating_sub(ascii_height) / 2;
-
-    let ascii_area = Rect {
-        x: main_layout[0].x,
-        y: main_layout[0].y + vertical_padding,
-        width: main_layout[0].width,
-        height: ascii_height.min(available_height),
-    };
-
-    let ascii_widget = Paragraph::new(ascii_lines);
-    frame.render_widget(ascii_widget, ascii_area);
-
-    // Right side: session picker
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(format!(" {} ", app.repo_name));
-
-    let inner_area = right_block.inner(main_layout[1]);
-    frame.render_widget(right_block, main_layout[1]);
-
-    // Content layout
-    let content_layout = Layout::vertical([
-        Constraint::Length(2), // Title spacing
-        Constraint::Length(2), // Welcome
-        Constraint::Length(1), // Subtitle
-        Constraint::Length(2), // Spacing
-        Constraint::Length(2), // Instructions
-        Constraint::Min(8),    // Session list
-        Constraint::Length(2), // Footer
-    ])
-    .split(inner_area);
-
-    // Welcome message
-    let welcome = Paragraph::new(Line::from(vec![
-        Span::styled("Welcome to ", Style::default().fg(Color::White)),
-        Span::styled(
-            "ws",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]))
-    .alignment(Alignment::Center);
-    frame.render_widget(welcome, content_layout[1]);
-
-    // Subtitle
-    let subtitle = Paragraph::new(Line::from(Span::styled(
-        "Select a workspace to open",
-        Style::default().fg(Color::DarkGray),
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(subtitle, content_layout[2]);
-
-    // Instructions
-    let instructions = Paragraph::new(Line::from(Span::styled(
-        "Worktrees & Sessions",
-        Style::default().fg(Color::Yellow),
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(instructions, content_layout[4]);
-
-    // Session list
-    let items: Vec<ListItem> = app
-        .sessions
-        .iter()
-        .map(|session| {
-            let status = if session.is_current {
-                Span::styled(" [current]", Style::default().fg(Color::Cyan))
-            } else if session.has_session {
-                Span::styled(" [active]", Style::default().fg(Color::Green))
-            } else {
-                Span::styled(" [inactive]", Style::default().fg(Color::DarkGray))
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", session.branch),
-                    Style::default().fg(Color::White),
-                ),
-                status,
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Sessions "),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-
-    frame.render_stateful_widget(list, content_layout[5], &mut app.list_state);
-
-    // Footer
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled("j/k", Style::default().fg(Color::Cyan)),
-        Span::raw(" navigate  "),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::raw(" open  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::raw(" quit"),
-    ]))
-    .alignment(Alignment::Center);
-    frame.render_widget(footer, content_layout[6]);
-}
-
-/// Result from dashboard
-pub enum DashboardResult {
-    /// User selected a session to open
-    OpenSession(String),
-    /// User quit without selecting
-    Quit,
-}
-
-/// Run the dashboard TUI (for when config already exists)
-pub fn run_dashboard() -> Result<DashboardResult> {
-    let mut app = DashboardApp::new()?;
-
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // Main loop
-    while !app.should_exit {
-        app.update_animation();
-
-        terminal.draw(|frame| draw_dashboard(frame, &mut app))?;
-
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.handle_key(key.code);
-                }
-            }
-        }
-    }
-
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-
-    if let Some(path) = app.selected_session {
-        Ok(DashboardResult::OpenSession(path))
-    } else {
-        Ok(DashboardResult::Quit)
-    }
 }

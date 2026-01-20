@@ -6,6 +6,7 @@ mod tmux;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use commands::StatusAction;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -150,6 +151,14 @@ enum PrCommands {
     List,
 }
 
+fn handle_status_action(action: StatusAction) -> Result<()> {
+    match action {
+        StatusAction::None => Ok(()),
+        StatusAction::Open(path) => commands::open(Some(path.to_string_lossy().to_string())),
+        StatusAction::Ai => commands::ai(None),
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -180,7 +189,7 @@ fn main() -> Result<()> {
         Some(Commands::Reload { target }) => commands::reload(target),
         Some(Commands::Sync { create, delete }) => commands::sync(create, delete),
         Some(Commands::Doctor { install }) => commands::doctor(install),
-        Some(Commands::Status) => commands::status(),
+        Some(Commands::Status) => handle_status_action(commands::status()?),
         Some(Commands::Config { key, value }) => commands::config(key, value),
         Some(Commands::Init) => commands::init(),
         Some(Commands::Ai { tool }) => commands::ai(tool),
@@ -197,15 +206,10 @@ fn main() -> Result<()> {
             // Check if config exists AND we're in a git repo - if so, show dashboard
             let config_path = crate::config::Config::path()?;
             let in_git_repo = git::get_root(None).is_ok();
-            
+
             if config_path.exists() && in_git_repo {
-                // Config exists and in git repo - show dashboard with session picker
-                match onboarding::run_dashboard()? {
-                    onboarding::DashboardResult::OpenSession(path) => {
-                        commands::open(Some(path))
-                    }
-                    onboarding::DashboardResult::Quit => Ok(()),
-                }
+                // Config exists and in git repo - show dashboard (plasma + status)
+                handle_status_action(commands::dashboard()?)
             } else {
                 // No config or not in git repo - run onboarding
                 if let Some(result) = onboarding::run_onboarding()? {
