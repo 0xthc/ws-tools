@@ -49,7 +49,6 @@ ws                           # Open workspace for current directory
 ws open feat/auth            # Open by branch name, path, or directory
 ws new feat/auth             # Create worktree from develop
 ws new hotfix/bug -f main    # Create worktree from main
-ws list                      # List all worktrees with session status
 ws select                    # Interactive worktree picker (fzf)
 ws status                    # TUI dashboard of worktrees & sessions
 ws delete feat/auth          # Delete worktree, session, and branch

@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release
 - `ws open` - Open workspace for a directory, branch, or worktree name
 - `ws new` - Create new worktree and open workspace
-- `ws list` - List all worktrees with session status
 - `ws select` - Interactive worktree selector with fzf
 - `ws delete` - Delete worktree, tmux session, and local branch
 - `ws sync` - Sync tmux sessions with worktrees

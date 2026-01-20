@@ -12,7 +12,7 @@ pub use doctor::doctor;
 pub use git_workflow::{clone_repo, gc, pr_create, pr_list, review, switch};
 pub use status::{dashboard, status, StatusAction};
 pub use update::update;
-pub use workspace::{delete, list, new, open, reload, select, sync};
+pub use workspace::{delete, new, open, reload, select, sync};
 
 use crate::git;
 use anyhow::{Context, Result};

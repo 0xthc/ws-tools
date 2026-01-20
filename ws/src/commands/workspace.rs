@@ -141,37 +141,6 @@ pub fn new(branch: &str, base: &str) -> Result<()> {
     open(Some(wt_path.display().to_string()))
 }
 
-/// List all worktrees with session status
-pub fn list() -> Result<()> {
-    let git_root = git::get_root(None).context("Not in a git repository")?;
-    let worktrees = git::list_worktrees(&git_root)?;
-    let active_sessions = tmux::get_active_sessions();
-
-    println!("{}", "Worktrees".bold());
-    println!();
-
-    for wt in worktrees {
-        let session_name = get_session_name(&wt.path)?;
-        let status = if active_sessions.contains(&session_name) {
-            "●".green().to_string()
-        } else {
-            " ".to_string()
-        };
-
-        let main_marker = if wt.path == git_root {
-            " (main)".yellow().to_string()
-        } else {
-            String::new()
-        };
-
-        println!("  {} {}{}", status, wt.branch, main_marker);
-        println!("    {}", wt.path.display().to_string().blue());
-        println!();
-    }
-
-    Ok(())
-}
-
 /// Interactive worktree selector with fzf
 pub fn select(direct_path: Option<PathBuf>) -> Result<()> {
     // If direct path provided, just open it

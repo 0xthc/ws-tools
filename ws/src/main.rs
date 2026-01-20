@@ -38,10 +38,6 @@ enum Commands {
         from: Option<String>,
     },
 
-    /// List all worktrees with session status
-    #[command(alias = "l", alias = "ls")]
-    List,
-
     /// Interactive worktree selector (fzf)
     #[command(alias = "s")]
     Select {
@@ -183,7 +179,7 @@ fn main() -> Result<()> {
             let base = from.unwrap_or_else(|| git::get_default_branch(None));
             commands::new(&branch, &base)
         }
-        Some(Commands::List) => commands::list(),
+
         Some(Commands::Select { path }) => commands::select(path),
         Some(Commands::Delete { target, force }) => commands::delete(&target, force),
         Some(Commands::Reload { target }) => commands::reload(target),

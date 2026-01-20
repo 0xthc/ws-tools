@@ -18,7 +18,6 @@ A Cargo workspace containing CLI tools for terminal-based development workflows.
 | `ws` | | Interactive dashboard to select and open worktrees (runs onboarding on first use) |
 | `ws open [target]` | `o` | Open workspace for a directory, branch, or worktree name |
 | `ws new <branch> [--from <base>]` | `n` | Create new worktree from base branch and open workspace |
-| `ws list` | `l`, `ls` | List all worktrees with session status |
 | `ws select` | `s` | Interactive worktree selector using fzf |
 | `ws delete <target> [--force]` | `d`, `rm` | Delete worktree, tmux session, and local branch |
 | `ws reload [target]` | `r` | Kill and recreate tmux session with current config |
