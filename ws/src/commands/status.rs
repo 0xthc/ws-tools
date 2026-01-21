@@ -362,10 +362,70 @@ impl StatusApp {
             }
         }
 
+        // Find orphaned sessions: sessions that belong to this repo but don't have worktrees
+        // Sessions are named: {worktree_dir_name}-{sanitized_branch}
+        let repo_prefix = format!("{}-", self.repo_name);
+        let workspaces_dir = super::get_workspaces_dir()
+            .ok()
+            .map(|p| p.join(&self.repo_name));
+        
+        // Get all directories in the workspaces folder (existing worktree dirs)
+        let workspace_dirs: std::collections::HashSet<String> = workspaces_dir
+            .and_then(|dir| dir.read_dir().ok())
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        
+        // Get all remote branches to help identify orphaned sessions
+        let remote_branches: std::collections::HashSet<String> = std::process::Command::new("git")
+            .current_dir(&self.git_root)
+            .args(["branch", "-r", "--format=%(refname:short)"])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(|s| s.trim_start_matches("origin/"))
+                    .map(|s| crate::git::sanitize_branch(s))
+                    .collect()
+            })
+            .unwrap_or_default();
+        
         self.orphaned_sessions = active_sessions
             .iter()
-            .filter(|s| {
-                s.starts_with(&format!("{}-", self.repo_name)) && !worktree_sessions.contains(*s)
+            .filter(|session| {
+                // Skip if this session is already tracked by a worktree
+                if worktree_sessions.contains(*session) {
+                    return false;
+                }
+                
+                // Check if session starts with repo name (main worktree pattern)
+                if session.starts_with(&repo_prefix) {
+                    return true;
+                }
+                
+                // Check if session starts with any workspace directory name
+                // Session format: {dir_name}-{branch}
+                for dir_name in &workspace_dirs {
+                    if session.starts_with(&format!("{}-", dir_name)) {
+                        return true;
+                    }
+                }
+                
+                // Check if session ends with a known branch name from this repo
+                // This catches sessions for deleted worktrees
+                for branch in &remote_branches {
+                    if session.ends_with(&format!("-{}", branch)) {
+                        return true;
+                    }
+                }
+                
+                false
             })
             .cloned()
             .collect();
