@@ -312,6 +312,12 @@ impl StatusApp {
             .to_string_lossy()
             .to_string();
 
+        // Fetch from origin to ensure we're in sync (run in background, don't block)
+        let _ = std::process::Command::new("git")
+            .current_dir(&git_root)
+            .args(["fetch", "--all", "--prune", "-q"])
+            .spawn();
+
         let mut app = Self {
             entries: Vec::new(),
             table_state: TableState::default(),
