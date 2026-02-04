@@ -3,7 +3,9 @@ use crate::git;
 use crate::tmux;
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -127,10 +129,14 @@ impl ReactionDiffusion {
             let radius = (width.min(height) / 4) as f64;
 
             for i in 0..num_seeds {
-                let angle = angle_offset + (i as f64 * 2.0 * std::f64::consts::PI / num_seeds as f64);
+                let angle =
+                    angle_offset + (i as f64 * 2.0 * std::f64::consts::PI / num_seeds as f64);
                 let sx = (cx as f64 + angle.cos() * radius * 0.5) as usize;
                 let sy = (cy as f64 + angle.sin() * radius * 0.25) as usize;
-                seed_positions.push((sx.clamp(1, width.saturating_sub(2)), sy.clamp(1, height.saturating_sub(2))));
+                seed_positions.push((
+                    sx.clamp(1, width.saturating_sub(2)),
+                    sy.clamp(1, height.saturating_sub(2)),
+                ));
             }
         }
 
@@ -280,10 +286,20 @@ enum InputMode {
 
 /// Result from a background task
 enum TaskResult {
-    DeleteWorktree { branch: String, success: bool, error: Option<String> },
-    Gc { deleted: usize },
-    SyncCreate { created: usize },
-    SyncDelete { deleted: usize },
+    DeleteWorktree {
+        branch: String,
+        success: bool,
+        error: Option<String>,
+    },
+    Gc {
+        deleted: usize,
+    },
+    SyncCreate {
+        created: usize,
+    },
+    SyncDelete {
+        deleted: usize,
+    },
 }
 
 /// Status application state
@@ -374,7 +390,7 @@ impl StatusApp {
         let workspaces_dir = super::get_workspaces_dir()
             .ok()
             .map(|p| p.join(&self.repo_name));
-        
+
         // Get all directories in the workspaces folder (existing worktree dirs)
         let workspace_dirs: std::collections::HashSet<String> = workspaces_dir
             .and_then(|dir| dir.read_dir().ok())
@@ -386,7 +402,7 @@ impl StatusApp {
                     .collect()
             })
             .unwrap_or_default();
-        
+
         // Get all remote branches to help identify orphaned sessions
         let remote_branches: std::collections::HashSet<String> = std::process::Command::new("git")
             .current_dir(&self.git_root)
@@ -401,7 +417,7 @@ impl StatusApp {
                     .collect()
             })
             .unwrap_or_default();
-        
+
         self.orphaned_sessions = active_sessions
             .iter()
             .filter(|session| {
@@ -409,12 +425,12 @@ impl StatusApp {
                 if worktree_sessions.contains(*session) {
                     return false;
                 }
-                
+
                 // Check if session starts with repo name (main worktree pattern)
                 if session.starts_with(&repo_prefix) {
                     return true;
                 }
-                
+
                 // Check if session starts with any workspace directory name
                 // Session format: {dir_name}-{branch}
                 for dir_name in &workspace_dirs {
@@ -422,7 +438,7 @@ impl StatusApp {
                         return true;
                     }
                 }
-                
+
                 // Check if session ends with a known branch name from this repo
                 // This catches sessions for deleted worktrees
                 for branch in &remote_branches {
@@ -430,7 +446,7 @@ impl StatusApp {
                         return true;
                     }
                 }
-                
+
                 false
             })
             .cloned()
@@ -483,25 +499,35 @@ impl StatusApp {
                     self.is_busy = false;
                     self.task_receiver = None;
                     match result {
-                        TaskResult::DeleteWorktree { branch, success, error } => {
+                        TaskResult::DeleteWorktree {
+                            branch,
+                            success,
+                            error,
+                        } => {
                             if success {
                                 self.message = Some((format!("Deleted '{}'", branch), false));
                             } else {
-                                self.message = Some((format!("Error: {}", error.unwrap_or_default()), true));
+                                self.message =
+                                    Some((format!("Error: {}", error.unwrap_or_default()), true));
                             }
                         }
                         TaskResult::Gc { deleted } => {
                             if deleted > 0 {
-                                self.message = Some((format!("Cleaned {} merged worktree(s)", deleted), false));
+                                self.message = Some((
+                                    format!("Cleaned {} merged worktree(s)", deleted),
+                                    false,
+                                ));
                             } else {
-                                self.message = Some(("No merged worktrees to clean".to_string(), false));
+                                self.message =
+                                    Some(("No merged worktrees to clean".to_string(), false));
                             }
                         }
                         TaskResult::SyncCreate { created } => {
                             self.message = Some((format!("Created {} session(s)", created), false));
                         }
                         TaskResult::SyncDelete { deleted } => {
-                            self.message = Some((format!("Deleted {} worktree(s)", deleted), false));
+                            self.message =
+                                Some((format!("Deleted {} worktree(s)", deleted), false));
                         }
                     }
                     self.refresh();
@@ -545,7 +571,14 @@ impl StatusApp {
         // Create worktree
         let output = Command::new("git")
             .current_dir(&self.git_root)
-            .args(["worktree", "add", "-b", branch, wt_path.to_str().unwrap(), &base])
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                wt_path.to_str().unwrap(),
+                &base,
+            ])
             .output();
 
         match output {
@@ -569,11 +602,16 @@ impl StatusApp {
         use std::thread;
 
         if self.is_busy {
-            self.message = Some(("Please wait for current operation to complete".to_string(), true));
+            self.message = Some((
+                "Please wait for current operation to complete".to_string(),
+                true,
+            ));
             return;
         }
 
-        let branch = self.entries.iter()
+        let branch = self
+            .entries
+            .iter()
             .find(|e| e.path == path)
             .map(|e| e.branch.clone())
             .unwrap_or_default();
@@ -591,7 +629,8 @@ impl StatusApp {
                     .unwrap_or_default();
 
                 if current_session == session {
-                    self.message = Some(("Cannot delete current session from TUI".to_string(), true));
+                    self.message =
+                        Some(("Cannot delete current session from TUI".to_string(), true));
                     return;
                 }
                 let _ = tmux::kill_session(&session);
@@ -628,15 +667,25 @@ impl StatusApp {
                         .current_dir(&git_root)
                         .args(["branch", "-d", &branch_clone])
                         .output();
-                    TaskResult::DeleteWorktree { branch: branch_clone, success: true, error: None }
+                    TaskResult::DeleteWorktree {
+                        branch: branch_clone,
+                        success: true,
+                        error: None,
+                    }
                 }
                 Ok(out) => {
                     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    TaskResult::DeleteWorktree { branch: branch_clone, success: false, error: Some(err) }
+                    TaskResult::DeleteWorktree {
+                        branch: branch_clone,
+                        success: false,
+                        error: Some(err),
+                    }
                 }
-                Err(e) => {
-                    TaskResult::DeleteWorktree { branch: branch_clone, success: false, error: Some(e.to_string()) }
-                }
+                Err(e) => TaskResult::DeleteWorktree {
+                    branch: branch_clone,
+                    success: false,
+                    error: Some(e.to_string()),
+                },
             };
             let _ = tx.send(result);
         });
@@ -681,9 +730,11 @@ impl StatusApp {
 
         for entry in &self.entries {
             if !entry.has_session && !entry.is_main {
-                let window_title = super::get_window_title(&entry.path)
-                    .unwrap_or_else(|_| entry.session.clone());
-                if tmux::create_session_with_title(&entry.session, &entry.path, &window_title).is_ok() {
+                let window_title =
+                    super::get_window_title(&entry.path).unwrap_or_else(|_| entry.session.clone());
+                if tmux::create_session_with_title(&entry.session, &entry.path, &window_title)
+                    .is_ok()
+                {
                     created += 1;
                 }
             }
@@ -699,7 +750,9 @@ impl StatusApp {
         let mut deleted = 0;
 
         // Delete orphaned worktrees (those without sessions, excluding main)
-        let to_delete: Vec<_> = self.entries.iter()
+        let to_delete: Vec<_> = self
+            .entries
+            .iter()
             .filter(|e| !e.has_session && !e.is_main)
             .map(|e| (e.path.clone(), e.branch.clone()))
             .collect();
@@ -724,7 +777,10 @@ impl StatusApp {
             let _ = tmux::kill_session(session);
         }
 
-        self.message = Some((format!("Deleted {} worktree(s), cleaned orphaned sessions", deleted), false));
+        self.message = Some((
+            format!("Deleted {} worktree(s), cleaned orphaned sessions", deleted),
+            false,
+        ));
         self.refresh();
     }
 
@@ -740,13 +796,16 @@ impl StatusApp {
             .output();
 
         let merged_branches: std::collections::HashSet<String> = match output {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(|l| l.trim().trim_start_matches("* ").trim_start_matches("+ ").to_string())
-                    .filter(|b| !b.is_empty() && b != &default_branch && !b.starts_with("remotes/"))
-                    .collect()
-            }
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| {
+                    l.trim()
+                        .trim_start_matches("* ")
+                        .trim_start_matches("+ ")
+                        .to_string()
+                })
+                .filter(|b| !b.is_empty() && b != &default_branch && !b.starts_with("remotes/"))
+                .collect(),
             _ => {
                 self.message = Some(("Error getting merged branches".to_string(), true));
                 return;
@@ -767,7 +826,12 @@ impl StatusApp {
                 // Remove worktree
                 let _ = Command::new("git")
                     .current_dir(&self.git_root)
-                    .args(["worktree", "remove", "--force", entry.path.to_str().unwrap()])
+                    .args([
+                        "worktree",
+                        "remove",
+                        "--force",
+                        entry.path.to_str().unwrap(),
+                    ])
                     .output();
 
                 // Delete branch
@@ -1041,8 +1105,11 @@ impl StatusApp {
             }
             KeyCode::Char('l') => {
                 self.input_mode = InputMode::Normal;
-                // PR list needs external display - show message  
-                self.message = Some(("Use 'ws pr list' from terminal to list PRs".to_string(), false));
+                // PR list needs external display - show message
+                self.message = Some((
+                    "Use 'ws pr list' from terminal to list PRs".to_string(),
+                    false,
+                ));
             }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.input_mode = InputMode::Normal;
@@ -1289,7 +1356,7 @@ fn pr_footer_spans(worktree_exists: bool) -> Vec<Span<'static>> {
             Span::raw(" "),
         ]
     };
-    
+
     let mut spans = status;
     spans.extend(vec![
         Span::styled("Enter", Style::default().fg(RatColor::Cyan)),
@@ -1686,22 +1753,22 @@ impl DashboardApp {
     fn new() -> Result<Self> {
         let status = StatusApp::new()?;
         let metrics = WorkspaceMetrics::from_git_root(&status.git_root);
-        
+
         // Check if gh is available
         let gh_available = which::which("gh").is_ok();
-        
+
         // Fetch PRs if gh is available
         let prs = if gh_available {
             Self::fetch_prs(&status.git_root)
         } else {
             Vec::new()
         };
-        
+
         let mut pr_table_state = TableState::default();
         if !prs.is_empty() {
             pr_table_state.select(Some(0));
         }
-        
+
         Ok(Self {
             status,
             plasma: ReactionDiffusion::with_metrics(80, 40, metrics),
@@ -1714,12 +1781,14 @@ impl DashboardApp {
             worktree_area: None,
         })
     }
-    
+
     fn handle_mouse_click(&mut self, x: u16, y: u16) {
         // Check if click is in PR area
         if let Some(pr_area) = self.pr_area {
-            if x >= pr_area.x && x < pr_area.x + pr_area.width
-                && y >= pr_area.y && y < pr_area.y + pr_area.height
+            if x >= pr_area.x
+                && x < pr_area.x + pr_area.width
+                && y >= pr_area.y
+                && y < pr_area.y + pr_area.height
             {
                 self.focus = DashboardFocus::PullRequests;
                 // Calculate which row was clicked (accounting for border)
@@ -1730,11 +1799,13 @@ impl DashboardApp {
                 return;
             }
         }
-        
+
         // Check if click is in worktree area
         if let Some(wt_area) = self.worktree_area {
-            if x >= wt_area.x && x < wt_area.x + wt_area.width
-                && y >= wt_area.y && y < wt_area.y + wt_area.height
+            if x >= wt_area.x
+                && x < wt_area.x + wt_area.width
+                && y >= wt_area.y
+                && y < wt_area.y + wt_area.height
             {
                 self.focus = DashboardFocus::Worktrees;
                 // Calculate which row was clicked (accounting for header + border)
@@ -1745,13 +1816,20 @@ impl DashboardApp {
             }
         }
     }
-    
+
     fn fetch_prs(git_root: &std::path::Path) -> Vec<PrEntry> {
         let output = std::process::Command::new("gh")
             .current_dir(git_root)
-            .args(["pr", "list", "--json", "number,title,headRefName,statusCheckRollup", "--limit", "10"])
+            .args([
+                "pr",
+                "list",
+                "--json",
+                "number,title,headRefName,statusCheckRollup",
+                "--limit",
+                "10",
+            ])
             .output();
-        
+
         match output {
             Ok(o) if o.status.success() => {
                 if let Ok(prs) = serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout) {
@@ -1773,40 +1851,47 @@ impl DashboardApp {
             _ => Vec::new(),
         }
     }
-    
+
     fn parse_check_status(rollup: &serde_json::Value) -> CheckStatus {
         let checks = match rollup.as_array() {
             Some(arr) => arr,
             None => return CheckStatus::Unknown,
         };
-        
+
         if checks.is_empty() {
             return CheckStatus::Unknown;
         }
-        
+
         let mut has_pending = false;
         let mut has_failure = false;
-        
+
         for check in checks {
             // Check both "state" (for check runs) and "conclusion" (for status contexts)
             let state = check["state"].as_str().unwrap_or("");
             let conclusion = check["conclusion"].as_str().unwrap_or("");
             let status = check["status"].as_str().unwrap_or("");
-            
+
             // Failure states
-            if state == "FAILURE" || state == "ERROR" 
-                || conclusion == "FAILURE" || conclusion == "failure"
-                || conclusion == "ERROR" || conclusion == "error" {
+            if state == "FAILURE"
+                || state == "ERROR"
+                || conclusion == "FAILURE"
+                || conclusion == "failure"
+                || conclusion == "ERROR"
+                || conclusion == "error"
+            {
                 has_failure = true;
             }
             // Pending states
-            else if state == "PENDING" || state == "EXPECTED" 
-                || status == "IN_PROGRESS" || status == "QUEUED"
-                || conclusion.is_empty() {
+            else if state == "PENDING"
+                || state == "EXPECTED"
+                || status == "IN_PROGRESS"
+                || status == "QUEUED"
+                || conclusion.is_empty()
+            {
                 has_pending = true;
             }
         }
-        
+
         if has_failure {
             CheckStatus::Failure
         } else if has_pending {
@@ -1824,7 +1909,7 @@ impl DashboardApp {
             self.last_frame = Instant::now();
         }
     }
-    
+
     fn toggle_focus(&mut self) {
         if self.gh_available && !self.prs.is_empty() {
             self.focus = match self.focus {
@@ -1833,7 +1918,7 @@ impl DashboardApp {
             };
         }
     }
-    
+
     fn next_pr(&mut self) {
         if self.prs.is_empty() {
             return;
@@ -1842,7 +1927,7 @@ impl DashboardApp {
         let next = if i >= self.prs.len() - 1 { 0 } else { i + 1 };
         self.pr_table_state.select(Some(next));
     }
-    
+
     fn prev_pr(&mut self) {
         if self.prs.is_empty() {
             return;
@@ -1851,7 +1936,7 @@ impl DashboardApp {
         let prev = if i == 0 { self.prs.len() - 1 } else { i - 1 };
         self.pr_table_state.select(Some(prev));
     }
-    
+
     fn selected_pr(&self) -> Option<&PrEntry> {
         self.pr_table_state.selected().and_then(|i| self.prs.get(i))
     }
@@ -1861,18 +1946,24 @@ fn draw_dashboard(frame: &mut Frame, app: &mut DashboardApp) {
     let area = frame.area();
 
     // Split: 40% plasma, 60% status
-    let layout = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(area);
+    let layout =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
 
     // Left: Plasma animation
     let plasma_width = layout[0].width as usize;
     let plasma_height = layout[0].height as usize;
-    app.plasma.resize(plasma_width.max(10), plasma_height.max(10));
+    app.plasma
+        .resize(plasma_width.max(10), plasma_height.max(10));
 
     let plasma_lines = app.plasma.render();
     let plasma_text: Vec<Line> = plasma_lines
         .iter()
-        .map(|line| Line::from(Span::styled(line.clone(), Style::default().fg(RatColor::Green))))
+        .map(|line| {
+            Line::from(Span::styled(
+                line.clone(),
+                Style::default().fg(RatColor::Green),
+            ))
+        })
         .collect();
 
     let plasma_height_u16 = plasma_text.len() as u16;
@@ -1907,8 +1998,8 @@ fn draw_dashboard_content(frame: &mut Frame, app: &mut DashboardApp, area: Rect)
     let chunks = if has_prs {
         Layout::vertical([
             Constraint::Length(app.prs.len().min(5) as u16 + 3), // PR table (max 5 rows + header + borders)
-            Constraint::Min(5),    // Worktrees table
-            Constraint::Length(2), // Footer
+            Constraint::Min(5),                                  // Worktrees table
+            Constraint::Length(2),                               // Footer
         ])
         .split(inner)
     } else {
@@ -1924,7 +2015,7 @@ fn draw_dashboard_content(frame: &mut Frame, app: &mut DashboardApp, area: Rect)
     } else {
         (None, chunks[0], chunks[1])
     };
-    
+
     // Store areas for mouse click detection
     app.pr_area = pr_area_rect;
     app.worktree_area = Some(worktree_area_rect);
@@ -1944,9 +2035,11 @@ fn draw_dashboard_content(frame: &mut Frame, app: &mut DashboardApp, area: Rect)
                 };
                 Row::new(vec![
                     RatCell::from(check_icon).style(check_style),
-                    RatCell::from(format!("#{}", pr.number)).style(Style::default().fg(RatColor::Cyan)),
+                    RatCell::from(format!("#{}", pr.number))
+                        .style(Style::default().fg(RatColor::Cyan)),
                     RatCell::from(pr.title.chars().take(35).collect::<String>()),
-                    RatCell::from(pr.branch.as_str()).style(Style::default().fg(RatColor::DarkGray)),
+                    RatCell::from(pr.branch.as_str())
+                        .style(Style::default().fg(RatColor::DarkGray)),
                 ])
             })
             .collect();
@@ -2050,7 +2143,8 @@ fn draw_dashboard_content(frame: &mut Frame, app: &mut DashboardApp, area: Rect)
     let footer_text = match app.focus {
         DashboardFocus::PullRequests => {
             // Check if selected PR's branch has a worktree
-            let worktree_exists = app.selected_pr()
+            let worktree_exists = app
+                .selected_pr()
                 .map(|pr| app.status.entries.iter().any(|e| e.branch == pr.branch))
                 .unwrap_or(false);
             pr_footer_spans(worktree_exists)
@@ -2075,7 +2169,11 @@ pub fn dashboard() -> Result<StatusAction> {
     let result = run_dashboard_loop(&mut terminal, &mut app);
 
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    );
 
     result?;
     Ok(app.status.action)

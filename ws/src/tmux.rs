@@ -148,25 +148,25 @@ pub fn create_session_with_title(session: &str, dir: &Path, window_title: &str) 
 /// Set up tmux status bar with branch and PR info
 fn setup_status_bar(session: &str, dir: &Path) -> Result<()> {
     let dir_str = dir.to_str().context("Invalid path")?;
-    
+
     // Create the status script if it doesn't exist
     ensure_status_script()?;
-    
+
     // Set status-right to call our script with the directory
     // The script caches results for 60s to avoid lag
     let status_cmd = format!("#(ws --status-bar \"{}\")", dir_str);
-    
+
     Command::new("tmux")
         .args(["set-option", "-t", session, "status-right", &status_cmd])
         .output()
         .context("Failed to set status-right")?;
-    
+
     // Set status-right-length to allow longer content
     Command::new("tmux")
         .args(["set-option", "-t", session, "status-right-length", "100"])
         .output()
         .context("Failed to set status-right-length")?;
-    
+
     Ok(())
 }
 
@@ -322,6 +322,267 @@ fn get_ghostty_env() -> Vec<String> {
     }
 
     env
+}
+
+/// Get number of panes in a session
+pub fn get_pane_count(session: &str) -> usize {
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", session, "-F", "#{pane_id}"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().count(),
+        _ => 0,
+    }
+}
+
+/// Get current session name from TMUX env
+pub fn get_current_session() -> Option<String> {
+    // TMUX env format: /tmp/tmux-501/default,12345,0
+    // We need to query tmux for the actual session name
+    if !is_inside_tmux() {
+        return None;
+    }
+
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "#{session_name}"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// Get working directory from pane 0 of a session
+pub fn get_session_dir(session: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            &format!("{}:0.0", session),
+            "-p",
+            "#{pane_current_path}",
+        ])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !dir.is_empty() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// Expand layout from 3 to 5 panes
+pub fn expand_layout(session: &str, dir: &str) -> Result<()> {
+    let config = Config::load().unwrap_or_default();
+    let ghostty_env = get_ghostty_env();
+
+    // Split pane 2 horizontally (creates pane 3)
+    run_tmux_split(session, "0.2", dir, &ghostty_env, &["-h", "-p", "30"])?;
+
+    // Split the new pane 3 vertically (creates pane 4)
+    run_tmux_split(session, "0.3", dir, &ghostty_env, &["-v"])?;
+
+    // Resize to golden ratio: 23% | 54% | 23%
+    // Pane 0 and 1 are on the left, pane 2 is center, panes 3 and 4 are right
+
+    // Resize left column (pane 0) from 38% to 23%
+    Command::new("tmux")
+        .args([
+            "resize-pane",
+            "-t",
+            &format!("{}:0.0", session),
+            "-x",
+            "23%",
+        ])
+        .output()
+        .context("Failed to resize pane 0")?;
+
+    // Resize center column (pane 2) to 54%
+    Command::new("tmux")
+        .args([
+            "resize-pane",
+            "-t",
+            &format!("{}:0.2", session),
+            "-x",
+            "54%",
+        ])
+        .output()
+        .context("Failed to resize pane 2")?;
+
+    // Send default commands to new panes
+    send_keys(session, "0.3", "ls -la")?;
+    send_keys(
+        session,
+        "0.4",
+        "tsqlx postgres://postgres:123@localhost:5432/basalt",
+    )?;
+
+    // Re-select the AI pane (pane 2)
+    select_pane(session, "0.2")?;
+
+    eprintln!(
+        "Expanded to 5-pane layout (using {} for AI)",
+        config.ai_tool.name()
+    );
+    Ok(())
+}
+
+/// Shrink layout from 5 to 3 panes
+pub fn shrink_layout(session: &str) -> Result<()> {
+    // Kill panes 4 and 3 (in reverse order to maintain indices)
+    Command::new("tmux")
+        .args(["kill-pane", "-t", &format!("{}:0.4", session)])
+        .output()
+        .context("Failed to kill pane 4")?;
+
+    Command::new("tmux")
+        .args(["kill-pane", "-t", &format!("{}:0.3", session)])
+        .output()
+        .context("Failed to kill pane 3")?;
+
+    // Resize to small layout ratio: 38% | 62%
+
+    // Resize left column (pane 0) to 38%
+    Command::new("tmux")
+        .args([
+            "resize-pane",
+            "-t",
+            &format!("{}:0.0", session),
+            "-x",
+            "38%",
+        ])
+        .output()
+        .context("Failed to resize pane 0")?;
+
+    // Resize right column (pane 2) to 62%
+    Command::new("tmux")
+        .args([
+            "resize-pane",
+            "-t",
+            &format!("{}:0.2", session),
+            "-x",
+            "62%",
+        ])
+        .output()
+        .context("Failed to resize pane 2")?;
+
+    // Re-select the AI pane (pane 2)
+    select_pane(session, "0.2")?;
+
+    eprintln!("Shrunk to 3-pane layout");
+    Ok(())
+}
+
+/// Acquire a lock for layout operations (returns lock file path if acquired)
+fn acquire_layout_lock(session: &str) -> Option<std::path::PathBuf> {
+    let lock_dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("ws-layout");
+    let _ = std::fs::create_dir_all(&lock_dir);
+
+    let lock_path = lock_dir.join(format!("{}.lock", session));
+
+    // Try to create lock file exclusively
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(_) => Some(lock_path),
+        Err(_) => {
+            // Lock exists - check if it's stale (> 5 seconds old)
+            if let Ok(metadata) = std::fs::metadata(&lock_path) {
+                if let Ok(modified) = metadata.modified() {
+                    if std::time::SystemTime::now()
+                        .duration_since(modified)
+                        .unwrap_or_default()
+                        > std::time::Duration::from_secs(5)
+                    {
+                        // Stale lock, remove and retry
+                        let _ = std::fs::remove_file(&lock_path);
+                        if std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&lock_path)
+                            .is_ok()
+                        {
+                            return Some(lock_path);
+                        }
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Release the layout lock
+fn release_layout_lock(lock_path: &std::path::Path) {
+    let _ = std::fs::remove_file(lock_path);
+}
+
+/// RAII guard to release lock on drop
+struct LockGuard(std::path::PathBuf);
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        release_layout_lock(&self.0);
+    }
+}
+
+/// Toggle layout based on display size
+pub fn toggle_layout(force_expand: bool, force_shrink: bool) -> Result<()> {
+    let session = get_current_session().context("Not inside a tmux session")?;
+
+    // Acquire lock to prevent concurrent modifications
+    let lock_path = match acquire_layout_lock(&session) {
+        Some(path) => path,
+        None => {
+            // Another layout operation is in progress, skip silently
+            return Ok(());
+        }
+    };
+
+    // Ensure lock is released on exit (even on panic/early return)
+    let _lock_guard = LockGuard(lock_path);
+
+    // Check pane count after acquiring lock
+    let pane_count = get_pane_count(&session);
+
+    // Only operate on valid layouts (exactly 3 or 5 panes)
+    if pane_count != 3 && pane_count != 5 {
+        // Not a ws-managed layout, skip silently
+        return Ok(());
+    }
+
+    // Determine action based on flags or current state
+    let should_expand = if force_expand {
+        true
+    } else if force_shrink {
+        false
+    } else {
+        // Auto-detect based on display size
+        is_large_display()
+    };
+
+    if should_expand && pane_count == 3 {
+        let dir = get_session_dir(&session).unwrap_or_else(|| ".".to_string());
+        expand_layout(&session, &dir)
+    } else if !should_expand && pane_count == 5 {
+        shrink_layout(&session)
+    } else {
+        // Already in correct layout
+        Ok(())
+    }
 }
 
 // Use exec crate for proper process replacement

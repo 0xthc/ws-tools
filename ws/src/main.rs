@@ -16,7 +16,7 @@ use std::path::PathBuf;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-    
+
     /// Output status bar info for tmux (internal use)
     #[arg(long, hide = true)]
     status_bar: Option<String>,
@@ -136,6 +136,17 @@ enum Commands {
 
     /// Update ws and texplore via Homebrew
     Update,
+
+    /// Toggle tmux layout based on display size
+    #[command(alias = "l")]
+    Layout {
+        /// Force expand to 5-pane layout
+        #[arg(long)]
+        expand: bool,
+        /// Force shrink to 3-pane layout
+        #[arg(long)]
+        shrink: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,29 +170,35 @@ fn print_status_bar(dir: &str) {
     use std::fs;
     use std::path::Path;
     use std::time::{Duration, SystemTime};
-    
+
     let dir_path = Path::new(dir);
-    
+
     // Get branch name (fast, no caching needed)
     let branch = git::get_branch(dir_path).unwrap_or_default();
     if branch.is_empty() {
         return;
     }
-    
+
     // Cache file based on directory hash
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join("ws-status");
     let _ = fs::create_dir_all(&cache_dir);
-    
-    let dir_hash = dir.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+
+    let dir_hash = dir
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
     let cache_file = cache_dir.join(format!("{}.cache", dir_hash));
-    
+
     // Check cache (60 second TTL)
     let cache_ttl = Duration::from_secs(60);
     let cached_pr_info = if let Ok(metadata) = fs::metadata(&cache_file) {
         if let Ok(modified) = metadata.modified() {
-            if SystemTime::now().duration_since(modified).unwrap_or(cache_ttl) < cache_ttl {
+            if SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(cache_ttl)
+                < cache_ttl
+            {
                 fs::read_to_string(&cache_file).ok()
             } else {
                 None
@@ -192,13 +209,13 @@ fn print_status_bar(dir: &str) {
     } else {
         None
     };
-    
+
     let pr_info = cached_pr_info.unwrap_or_else(|| {
         let info = fetch_pr_info_for_branch(dir_path, &branch);
         let _ = fs::write(&cache_file, &info);
         info
     });
-    
+
     // Format: "branch | #123 Title ✓" or just "branch" if no PR
     if pr_info.is_empty() {
         print!("{}", branch);
@@ -213,39 +230,43 @@ fn fetch_pr_info_for_branch(dir: &std::path::Path, branch: &str) -> String {
     if which::which("gh").is_err() {
         return String::new();
     }
-    
+
     // Query gh for PR on this branch
     let output = std::process::Command::new("gh")
         .current_dir(dir)
         .args([
-            "pr", "list",
-            "--head", branch,
-            "--json", "number,title,statusCheckRollup",
-            "--limit", "1"
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--json",
+            "number,title,statusCheckRollup",
+            "--limit",
+            "1",
         ])
         .output();
-    
+
     let output = match output {
         Ok(o) if o.status.success() => o,
         _ => return String::new(),
     };
-    
+
     let prs: Vec<serde_json::Value> = match serde_json::from_slice(&output.stdout) {
         Ok(v) => v,
         Err(_) => return String::new(),
     };
-    
+
     let pr = match prs.first() {
         Some(p) => p,
         None => return String::new(),
     };
-    
+
     let number = pr["number"].as_u64().unwrap_or(0);
     let title = pr["title"].as_str().unwrap_or("");
-    
+
     // Parse check status
     let check_icon = parse_check_status_icon(&pr["statusCheckRollup"]);
-    
+
     // Truncate title if too long
     let title_short: String = title.chars().take(30).collect();
     let title_display = if title.len() > 30 {
@@ -253,7 +274,7 @@ fn fetch_pr_info_for_branch(dir: &std::path::Path, branch: &str) -> String {
     } else {
         title_short
     };
-    
+
     format!("#{} {} {}", number, title_display, check_icon)
 }
 
@@ -262,30 +283,37 @@ fn parse_check_status_icon(rollup: &serde_json::Value) -> &'static str {
         Some(arr) => arr,
         None => return "",
     };
-    
+
     if checks.is_empty() {
         return "";
     }
-    
+
     let mut has_pending = false;
     let mut has_failure = false;
-    
+
     for check in checks {
         // StatusContext uses "state", CheckRun uses "conclusion" and "status"
         let state = check["state"].as_str().unwrap_or("");
         let conclusion = check["conclusion"].as_str().unwrap_or("");
         let status = check["status"].as_str().unwrap_or("");
-        
+
         // Check for failures
-        if state == "FAILURE" || state == "ERROR" 
-            || conclusion == "FAILURE" || conclusion == "failure"
-            || conclusion == "ERROR" || conclusion == "error" {
+        if state == "FAILURE"
+            || state == "ERROR"
+            || conclusion == "FAILURE"
+            || conclusion == "failure"
+            || conclusion == "ERROR"
+            || conclusion == "error"
+        {
             has_failure = true;
-        } 
+        }
         // Check for pending (but not if already marked as success via state)
-        else if state == "PENDING" || state == "EXPECTED" 
-            || status == "IN_PROGRESS" || status == "QUEUED" 
-            || status == "PENDING" {
+        else if state == "PENDING"
+            || state == "EXPECTED"
+            || status == "IN_PROGRESS"
+            || status == "QUEUED"
+            || status == "PENDING"
+        {
             has_pending = true;
         }
         // If it's a CheckRun (has status field) with no conclusion yet, it's pending
@@ -293,7 +321,7 @@ fn parse_check_status_icon(rollup: &serde_json::Value) -> &'static str {
             has_pending = true;
         }
     }
-    
+
     if has_failure {
         "✗"
     } else if has_pending {
@@ -352,6 +380,7 @@ fn main() -> Result<()> {
         Some(Commands::Review { number }) => commands::review(number),
         Some(Commands::Gc { force }) => commands::gc(force),
         Some(Commands::Update) => commands::update(),
+        Some(Commands::Layout { expand, shrink }) => commands::layout(expand, shrink),
         None => {
             // Check if config exists AND we're in a git repo - if so, show dashboard
             let config_path = crate::config::Config::path()?;
