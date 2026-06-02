@@ -1017,10 +1017,12 @@ impl StatusApp {
             }
 
             // Worktree actions
+            // Capitals alias lowercase so they match the Ctrl-b bindings
+            // (Ctrl-b D = delete, Ctrl-b R = reload) and never mean something else.
             KeyCode::Enter | KeyCode::Char('o') => self.open_selected(),
             KeyCode::Char('n') => self.start_new_worktree(),
-            KeyCode::Char('d') => self.start_delete(),
-            KeyCode::Char('r') => self.reload_selected(),
+            KeyCode::Char('d') | KeyCode::Char('D') => self.start_delete(),
+            KeyCode::Char('r') | KeyCode::Char('R') => self.reload_selected(),
 
             // Sync & cleanup
             KeyCode::Char('s') => self.show_sync_menu(),
@@ -1035,11 +1037,11 @@ impl StatusApp {
             // PR commands
             KeyCode::Char('p') => self.show_pr_menu(),
 
-            // Doctor
-            KeyCode::Char('D') => self.exec_doctor(),
+            // Doctor (moved off 'D' to avoid colliding with Ctrl-b D = delete)
+            KeyCode::F(2) => self.exec_doctor(),
 
-            // Refresh
-            KeyCode::Char('R') => {
+            // Refresh (moved off 'R' to avoid colliding with Ctrl-b R = reload)
+            KeyCode::F(5) => {
                 self.refresh();
                 self.message = Some(("Refreshed".to_string(), false));
             }
@@ -1292,8 +1294,20 @@ fn draw_status(frame: &mut Frame, app: &mut StatusApp) {
 
 /// Build worktree action footer spans (shared between status and dashboard)
 fn worktree_footer_spans(has_orphans: bool) -> Vec<Span<'static>> {
-    if has_orphans {
+    // Leading "keys:" label makes clear these are direct keypresses,
+    // not Ctrl-b prefix bindings.
+    let label = || Span::styled("keys: ", Style::default().fg(RatColor::DarkGray));
+    let help = || {
         vec![
+            Span::raw(" "),
+            Span::styled("?", Style::default().fg(RatColor::Cyan)),
+            Span::raw("help"),
+        ]
+    };
+
+    if has_orphans {
+        let mut spans = vec![
+            label(),
             Span::styled("o", Style::default().fg(RatColor::Cyan)),
             Span::raw("pen "),
             Span::styled("n", Style::default().fg(RatColor::Cyan)),
@@ -1312,13 +1326,16 @@ fn worktree_footer_spans(has_orphans: bool) -> Vec<Span<'static>> {
             Span::raw("lean "),
             Span::styled("q", Style::default().fg(RatColor::Cyan)),
             Span::raw("uit"),
-        ]
+        ];
+        spans.extend(help());
+        spans
     } else {
-        vec![
+        let mut spans = vec![
             Span::styled(" ✓ ", Style::default().fg(RatColor::Green)),
             Span::raw("All in sync  "),
             Span::styled("│", Style::default().fg(RatColor::DarkGray)),
             Span::raw(" "),
+            label(),
             Span::styled("o", Style::default().fg(RatColor::Cyan)),
             Span::raw("pen "),
             Span::styled("n", Style::default().fg(RatColor::Cyan)),
@@ -1335,7 +1352,9 @@ fn worktree_footer_spans(has_orphans: bool) -> Vec<Span<'static>> {
             Span::raw("lean "),
             Span::styled("q", Style::default().fg(RatColor::Cyan)),
             Span::raw("uit"),
-        ]
+        ];
+        spans.extend(help());
+        spans
     }
 }
 
@@ -1362,7 +1381,9 @@ fn pr_footer_spans(worktree_exists: bool) -> Vec<Span<'static>> {
         Span::styled("Enter", Style::default().fg(RatColor::Cyan)),
         Span::raw(" review "),
         Span::styled("q", Style::default().fg(RatColor::Cyan)),
-        Span::raw("uit"),
+        Span::raw("uit "),
+        Span::styled("?", Style::default().fg(RatColor::Cyan)),
+        Span::raw("help"),
     ]);
     spans
 }
@@ -1579,6 +1600,11 @@ fn draw_help_popup(frame: &mut Frame) {
 
     let help_text = vec![
         Line::from(Span::styled(
+            "Direct keys — press on their own, no Ctrl-b prefix",
+            Style::default().fg(RatColor::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
             "Navigation",
             Style::default()
                 .fg(RatColor::Yellow)
@@ -1608,11 +1634,11 @@ fn draw_help_popup(frame: &mut Frame) {
             Span::raw("Create new worktree"),
         ]),
         Line::from(vec![
-            Span::styled("  d ", Style::default().fg(RatColor::Cyan)),
+            Span::styled("  d/D ", Style::default().fg(RatColor::Cyan)),
             Span::raw("Delete selected worktree"),
         ]),
         Line::from(vec![
-            Span::styled("  r ", Style::default().fg(RatColor::Cyan)),
+            Span::styled("  r/R ", Style::default().fg(RatColor::Cyan)),
             Span::raw("Reload session (kill & recreate)"),
         ]),
         Line::from(""),
@@ -1646,17 +1672,42 @@ fn draw_help_popup(frame: &mut Frame) {
             Span::raw("PR menu (create/list)"),
         ]),
         Line::from(vec![
-            Span::styled("  D ", Style::default().fg(RatColor::Cyan)),
+            Span::styled("  F2 ", Style::default().fg(RatColor::Cyan)),
             Span::raw("Run doctor (check dependencies)"),
         ]),
         Line::from(vec![
-            Span::styled("  R ", Style::default().fg(RatColor::Cyan)),
+            Span::styled("  F5 ", Style::default().fg(RatColor::Cyan)),
             Span::raw("Refresh worktree list"),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  q/Esc ", Style::default().fg(RatColor::Cyan)),
             Span::raw("Quit"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Workspace shortcuts (Ctrl-b then key, anywhere)",
+            Style::default()
+                .fg(RatColor::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  Ctrl-b W ", Style::default().fg(RatColor::Cyan)),
+            Span::raw("Worktree picker      "),
+            Span::styled("Ctrl-b A ", Style::default().fg(RatColor::Cyan)),
+            Span::raw("Switch AI tool"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl-b R ", Style::default().fg(RatColor::Cyan)),
+            Span::raw("Reload session       "),
+            Span::styled("Ctrl-b D ", Style::default().fg(RatColor::Cyan)),
+            Span::raw("Delete worktree"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl-b F ", Style::default().fg(RatColor::Cyan)),
+            Span::raw("Find files           "),
+            Span::styled("Ctrl-b 2/3 ", Style::default().fg(RatColor::Cyan)),
+            Span::raw("Shrink/expand layout"),
         ]),
     ];
 
