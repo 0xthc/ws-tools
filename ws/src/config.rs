@@ -5,8 +5,8 @@ use std::path::PathBuf;
 /// Available AI CLI tools
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AiTool {
-    Droid,    // Claude Code (default)
-    Claude,   // Claude CLI
+    Droid,    // Factory AI CLI (default)
+    Claude,   // Claude Code CLI
     Codex,    // OpenAI Codex CLI
     Gemini,   // Google Gemini CLI
     Copilot,  // GitHub Copilot CLI
@@ -51,6 +51,19 @@ impl AiTool {
             AiTool::Copilot => "GitHub Copilot CLI",
             AiTool::Vibe => "Mistral Vibe",
             AiTool::OpenCode => "OpenCode",
+        }
+    }
+
+    /// Get a hint on how to install this tool
+    pub fn install_hint(&self) -> &'static str {
+        match self {
+            AiTool::Droid => "https://factory.ai",
+            AiTool::Claude => "https://claude.ai/download",
+            AiTool::Codex => "npm install -g @openai/codex",
+            AiTool::Gemini => "npm install -g @google/gemini-cli",
+            AiTool::Copilot => "gh extension install github/gh-copilot",
+            AiTool::Vibe => "https://mistral.ai",
+            AiTool::OpenCode => "https://opencode.ai",
         }
     }
 

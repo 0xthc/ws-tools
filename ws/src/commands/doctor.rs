@@ -1,3 +1,4 @@
+use crate::config::Config;
 use anyhow::Result;
 use colored::*;
 use std::process::Command;
@@ -36,12 +37,6 @@ const DEPENDENCIES: &[Dependency] = &[
         required: false,
     },
     Dependency {
-        name: "droid",
-        brew_name: "", // Not available via brew, it's Claude Code
-        description: "Claude Code CLI (install from claude.ai)",
-        required: false,
-    },
-    Dependency {
         name: "gh",
         brew_name: "gh",
         description: "GitHub CLI for PR management",
@@ -77,6 +72,23 @@ pub fn doctor(install: bool) -> Result<()> {
         println!("  {} {}{}", status, dep.name, req.dimmed());
         println!("    {}", dep.description.dimmed());
     }
+
+    // Check the configured AI tool's binary (not a hardcoded one)
+    let ai_tool = Config::load().unwrap_or_default().ai_tool;
+    let ai_missing = which::which(ai_tool.binary()).is_err();
+    let ai_status = if ai_missing {
+        all_ok = false;
+        "○".yellow().to_string()
+    } else {
+        "✓".green().to_string()
+    };
+    println!(
+        "  {} {} {}",
+        ai_status,
+        ai_tool.binary(),
+        "(AI tool, optional)".dimmed()
+    );
+    println!("    {}", ai_tool.name().dimmed());
 
     println!();
 
@@ -125,13 +137,15 @@ pub fn doctor(install: bool) -> Result<()> {
             println!();
         }
 
-        // Check for droid separately
-        if missing_optional.iter().any(|d| d.name == "droid") {
+        // The AI tool isn't installed via Homebrew - point at its installer
+        if ai_missing {
             println!(
-                "{} Note: 'droid' (Claude Code) must be installed manually:",
-                "::".yellow().bold()
+                "{} Note: {} ({}) must be installed manually:",
+                "::".yellow().bold(),
+                ai_tool.name(),
+                ai_tool.binary()
             );
-            println!("  Visit https://claude.ai/download");
+            println!("  {}", ai_tool.install_hint());
             println!();
         }
 
