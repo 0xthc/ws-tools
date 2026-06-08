@@ -99,10 +99,6 @@ struct ReactionDiffusion {
 }
 
 impl ReactionDiffusion {
-    fn new(width: usize, height: usize) -> Self {
-        Self::with_metrics(width, height, WorkspaceMetrics::default())
-    }
-
     fn with_metrics(width: usize, height: usize, metrics: WorkspaceMetrics) -> Self {
         let hash = metrics.name_hash();
 
@@ -291,15 +287,6 @@ enum TaskResult {
         success: bool,
         error: Option<String>,
     },
-    Gc {
-        deleted: usize,
-    },
-    SyncCreate {
-        created: usize,
-    },
-    SyncDelete {
-        deleted: usize,
-    },
 }
 
 /// Status application state
@@ -413,7 +400,7 @@ impl StatusApp {
                 String::from_utf8_lossy(&o.stdout)
                     .lines()
                     .map(|s| s.trim_start_matches("origin/"))
-                    .map(|s| crate::git::sanitize_branch(s))
+                    .map(crate::git::sanitize_branch)
                     .collect()
             })
             .unwrap_or_default();
@@ -510,24 +497,6 @@ impl StatusApp {
                                 self.message =
                                     Some((format!("Error: {}", error.unwrap_or_default()), true));
                             }
-                        }
-                        TaskResult::Gc { deleted } => {
-                            if deleted > 0 {
-                                self.message = Some((
-                                    format!("Cleaned {} merged worktree(s)", deleted),
-                                    false,
-                                ));
-                            } else {
-                                self.message =
-                                    Some(("No merged worktrees to clean".to_string(), false));
-                            }
-                        }
-                        TaskResult::SyncCreate { created } => {
-                            self.message = Some((format!("Created {} session(s)", created), false));
-                        }
-                        TaskResult::SyncDelete { deleted } => {
-                            self.message =
-                                Some((format!("Deleted {} worktree(s)", deleted), false));
                         }
                     }
                     self.refresh();
@@ -2262,25 +2231,23 @@ fn run_dashboard_loop(
                                 continue;
                             }
                         }
-                        KeyCode::Enter => {
-                            if app.focus == DashboardFocus::PullRequests {
-                                if let Some(pr) = app.selected_pr() {
-                                    // Set action to review this PR
-                                    app.status.action = StatusAction::ReviewPr(pr.number);
-                                    app.status.should_exit = true;
-                                }
-                                continue;
+                        KeyCode::Enter if app.focus == DashboardFocus::PullRequests => {
+                            if let Some(pr) = app.selected_pr() {
+                                // Set action to review this PR
+                                app.status.action = StatusAction::ReviewPr(pr.number);
+                                app.status.should_exit = true;
                             }
+                            continue;
                         }
                         _ => {}
                     }
                     // Fall through to status key handling
                     app.status.handle_key(key.code);
                 }
-                Event::Mouse(mouse) => {
-                    if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) {
-                        app.handle_mouse_click(mouse.column, mouse.row);
-                    }
+                Event::Mouse(mouse)
+                    if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) =>
+                {
+                    app.handle_mouse_click(mouse.column, mouse.row);
                 }
                 _ => {}
             }

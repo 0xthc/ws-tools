@@ -307,17 +307,15 @@ fn parse_check_status_icon(rollup: &serde_json::Value) -> &'static str {
         {
             has_failure = true;
         }
-        // Check for pending (but not if already marked as success via state)
+        // Check for pending (but not if already marked as success via state).
+        // The final clause covers a CheckRun (has status field) with no conclusion yet.
         else if state == "PENDING"
             || state == "EXPECTED"
             || status == "IN_PROGRESS"
             || status == "QUEUED"
             || status == "PENDING"
+            || (!status.is_empty() && conclusion.is_empty() && status != "COMPLETED")
         {
-            has_pending = true;
-        }
-        // If it's a CheckRun (has status field) with no conclusion yet, it's pending
-        else if !status.is_empty() && conclusion.is_empty() && status != "COMPLETED" {
             has_pending = true;
         }
     }

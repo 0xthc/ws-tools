@@ -102,10 +102,8 @@ fn main() -> io::Result<()> {
                     app.refreshing = false;
                     last_refresh = Instant::now();
                 }
-                Event::Mouse(mouse) => {
-                    if has_focus {
-                        handle_mouse(&mut app, mouse)?;
-                    }
+                Event::Mouse(mouse) if has_focus => {
+                    handle_mouse(&mut app, mouse)?;
                 }
                 _ => {}
             }
@@ -1080,7 +1078,7 @@ fn load_children(
         }
     }
 
-    children.sort_by(|a, b| sort_key(&a.path).cmp(&sort_key(&b.path)));
+    children.sort_by_key(|a| sort_key(&a.path));
     node.children = Some(children);
     if let Some(children) = node.children.as_ref() {
         node.subtree_changes = children.iter().map(|child| child.subtree_changes).sum();
